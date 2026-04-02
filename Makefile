@@ -8,7 +8,7 @@ setup:
 		. .venv/bin/activate && pip install fastapi "uvicorn[standard]" aiosqlite "pydantic>=2.10" \
 		pydantic-settings networkx pypdf python-docx beautifulsoup4 fastmcp python-multipart \
 		pytest pytest-asyncio ruff mypy httpx
-	cd frontend && npm install
+	cd frontend && bun install
 	. .venv/bin/activate && python scripts/setup_db.py
 	@echo "=== Setup complete! Run 'make seed' to populate demo data ==="
 
@@ -17,7 +17,7 @@ dev:
 	@echo "Starting backend on :8000 and frontend on :3000..."
 	@trap 'kill 0' INT; \
 	. .venv/bin/activate && uvicorn backend.main:app --reload --port 8000 & \
-	cd frontend && npm run dev & \
+	cd frontend && bun run dev & \
 	wait
 
 # Seed demo data
@@ -27,17 +27,17 @@ seed:
 # Run all tests
 test:
 	. .venv/bin/activate && pytest tests/ -v
-	cd frontend && npx vitest run 2>/dev/null || true
+	cd frontend && bun run vitest run 2>/dev/null || true
 
 # Run linters
 lint:
 	. .venv/bin/activate && ruff check backend/ scripts/ mcp/ tests/
-	cd frontend && npm run lint
+	cd frontend && bun run lint
 
 # Type checking
 check:
 	. .venv/bin/activate && mypy backend/ --ignore-missing-imports
-	cd frontend && npx tsc --noEmit
+	cd frontend && bun run tsc --noEmit
 
 # Remove generated data
 clean:
