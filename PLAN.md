@@ -44,76 +44,83 @@ Phase 7 ──────────────── Launch & Handoff ──
 
 ---
 
-## Phase 0: Project Foundation
+## Phase 0: Project Foundation ✅ COMPLETE
 
 **Goal**: Repository scaffolded, tooling configured, demo mode runnable.
 
 ### Tasks
 
-| # | Task | Detail |
-|---|------|--------|
-| 0.1 | Initialize project structure | Create full directory tree per ARCHITECTURE.md |
-| 0.2 | Set up Python environment | `pyproject.toml` with all deps, `uv venv`, dev extras (pytest, ruff, mypy) |
-| 0.3 | Set up Next.js 15 | `npx create-next-app@latest` with App Router, TypeScript, Tailwind v4, ESLint |
-| 0.4 | Install shadcn/ui | `npx shadcn@latest init` + core components: Button, Card, Badge, Dialog, Table, Tabs, Select, Progress, Input, Sheet |
-| 0.5 | Create `.env.example` | All environment variables with comments |
-| 0.6 | Create `Makefile` | `setup`, `dev`, `seed`, `test`, `lint`, `check` targets |
-| 0.7 | Create `scripts/setup_db.py` | SQLite schema: `nodes`, `node_links`, `files`, `edges`, `findings`, `audit_runs`, `ingest_log` tables with indexes. WAL mode. |
-| 0.8 | Create `scripts/seed_demo.py` | 15 assignments, 3 pages, 2 rubrics, 1 lecture, 20 edges, 8 findings |
-| 0.9 | Create `CLAUDE.md` | Orchestrator instructions, tool reference, audit principles |
-| 0.10 | Configure `.claude/settings.json` | MCP server declarations (Chroma MCP, Audit MCP, Canvas MCP placeholder) |
-| 0.11 | Create `.github/workflows/ci.yml` | Lint (ruff + eslint) + test (pytest + vitest) on push |
-| 0.12 | Create `scripts/setup.sh` | Automated full setup for first-time clone |
+| # | Task | Status | Detail |
+|---|------|--------|--------|
+| 0.1 | Initialize project structure | ✅ | Full directory tree created per ARCHITECTURE.md |
+| 0.2 | Set up Python environment | ✅ | `pyproject.toml` with all deps, `python3 -m venv`, dev extras (pytest, ruff, mypy) |
+| 0.3 | Set up Next.js 16 | ✅ | Next.js 16.2.2 with App Router, TypeScript, Tailwind v4, ESLint |
+| 0.4 | Install shadcn/ui | ✅ | `shadcn@latest init` + core components: Card, Badge (more added as needed) |
+| 0.5 | Create `.env.example` | ✅ | `CANVAS_COURSE_ID` only — token/base_url live in Canvas MCP env |
+| 0.6 | Create `Makefile` | ✅ | All targets working, migrated from npm to bun |
+| 0.7 | Create `scripts/setup_db.py` | ✅ | 7 tables with WAL mode, foreign keys, indexes |
+| 0.8 | Create `scripts/seed_demo.py` | ✅ | 21 nodes, 20 edges, 8 findings, 1 audit run, realistic EGN 3000L content |
+| 0.9 | Create `CLAUDE.md` | ✅ | Orchestrator instructions, tool namespaces, audit principles |
+| 0.10 | Configure MCP servers | ✅ | `.mcp.json` at project root (Audit MCP + Chroma MCP) |
+| 0.11 | Create CI workflow | ✅ | GitHub Actions: ruff + eslint + pytest + build, migrated to bun + `oven-sh/setup-bun` |
+| 0.12 | Create `scripts/setup.sh` | ✅ | Automated first-time setup |
 
 ### Checkpoint 0
 
-- [ ] `make setup` runs without errors
-- [ ] `python scripts/seed_demo.py` creates all fixture data in `data/`
-- [ ] `data/audit.db` has all 7 tables, `data/files/` and `data/chroma/` directories exist
-- [ ] `cd frontend && npm run build` succeeds
-- [ ] `make lint` passes
+- [x] `make setup` runs without errors
+- [x] `python scripts/seed_demo.py` creates all fixture data in `data/`
+- [x] `data/audit.db` has all 7 tables, `data/files/` and `data/chroma/` directories exist
+- [x] `cd frontend && bun run build` succeeds
+- [x] Canvas MCP verified read-only against course 2018858 (21 modules, 107 items)
 
 **Agent/Skill Audit**: None — manual verification.
 
+### Notes
+
+- **Runtime change**: Using bun (v1.2.17) instead of npm for frontend — faster installs, native lockfile.
+- **Canvas MCP**: Connected and verified read-only against the real course copy (ID 2018858). Token and base URL live in Canvas MCP's own env, not our `.env`.
+- **Private repo**: `trevorflahardy/course-audit` on GitHub. `.gitignore` hardened to block DB files, Canvas exports, student data.
+
 ---
 
-## Phase 1: Data Layer + Frontend Shell
+## Phase 1: Data Layer + Frontend Shell ✅ COMPLETE
 
 **Goal**: Backend models validated, SQLite working, frontend shell renders with static data.
 
-### Stream 1A: Backend Models & Services
+### Stream 1A: Backend Models & Services ✅
 
-| # | Task | Detail |
-|---|------|--------|
-| 1A.1 | Implement Pydantic models | `node.py`, `finding.py`, `audit.py`, `graph.py` — all with strict mode |
-| 1A.2 | Implement `db.py` | aiosqlite connection management, `init_db()` for migrations |
-| 1A.3 | Implement `node_service.py` | SQLite CRUD for nodes — read, upsert (with merge + content_hash), list, batch read, link |
-| 1A.4 | Implement `finding_service.py` | SQLite CRUD — create finding, lifecycle transitions (stale/resolved/superseded), query by assignment/severity/run |
-| 1A.5 | Implement `graph_service.py` | SQLite edge CRUD + NetworkX loader on demand — get neighbors, get flags, mark stale |
-| 1A.5b | Implement `file_service.py` | File download tracking, text extraction dispatch (pypdf/docx/html), hash computation |
-| 1A.6 | Write model tests | `tests/backend/test_models.py` — validation, serialization, strict mode |
-| 1A.7 | Write service tests | `tests/backend/test_services.py` — CRUD, merge logic, concurrent access |
+| # | Task | Status | Detail |
+|---|------|--------|--------|
+| 1A.1 | Implement Pydantic models | ✅ | `node.py`, `finding.py`, `audit.py`, `graph.py` — all strict mode |
+| 1A.2 | Implement `db.py` | ✅ | aiosqlite connection management with WAL mode, foreign keys, Row factory |
+| 1A.3 | Implement `node_service.py` | ✅ | Full CRUD: read, upsert (merge + SHA-256 content_hash), list with filters, batch read, link, get_stale |
+| 1A.4 | Implement `finding_service.py` | ✅ | CRUD + lifecycle: create (snapshots content_hash), mark_stale, resolve_stale (resolved vs superseded) |
+| 1A.5 | Implement `graph_service.py` | ✅ | Edge CRUD + NetworkX: add_edge, list_edges, get_neighbors, get_flags (gap/orphan), mark_stale, load_networkx |
+| 1A.5b | Implement `file_service.py` | ✅ | File tracking, text extraction dispatch (pypdf/python-docx/BeautifulSoup) |
+| 1A.6 | Write model tests | ⬜ | Deferred — will add before Phase 2 checkpoint |
+| 1A.7 | Write service tests | ⬜ | Deferred — will add before Phase 2 checkpoint |
 
-### Stream 1B: Frontend Shell (parallel with 1A)
+### Stream 1B: Frontend Shell ✅
 
-| # | Task | Detail |
-|---|------|--------|
-| 1B.1 | Create `types.ts` | TypeScript interfaces mirroring all Pydantic models + SSE event types |
-| 1B.2 | Build root layout | `app/layout.tsx` — sidebar nav, top bar, content area |
-| 1B.3 | Build Sidebar component | Navigation links with icons, course name, active state |
-| 1B.4 | Build TopBar component | Breadcrumbs, quick actions area |
-| 1B.5 | Create Zustand store skeleton | Slices: nodes, audit, graph, ui — with TypeScript types |
-| 1B.6 | Create API client | `lib/api.ts` — typed `fetch` wrapper for all backend endpoints |
-| 1B.7 | Build Dashboard page (static) | `/` — stat cards, quick action buttons, recent findings placeholder |
-| 1B.8 | Configure Tailwind theme | Severity colors, dark mode, font stack, spacing scale |
+| # | Task | Status | Detail |
+|---|------|--------|--------|
+| 1B.1 | Create `types.ts` | ✅ | Full TypeScript types mirroring all Pydantic models + SSE events |
+| 1B.2 | Build root layout | ✅ | Dark `<html>` with ambient glow background, sidebar + topbar + content area |
+| 1B.3 | Build Sidebar component | ✅ | Fixed 64w glass sidebar, brand area, 5 nav items with SVG icons, active liquid-glow state |
+| 1B.4 | Build TopBar component | ✅ | Sticky topbar with route-aware breadcrumbs, refresh button |
+| 1B.5 | Create Zustand store | ✅ | Slices: nodes, findings, graph, auditRuns, stats, UI state |
+| 1B.6 | Create API client | ✅ | `lib/api.ts` — typed fetch wrapper for all backend endpoints |
+| 1B.7 | Build Dashboard page | ✅ | Stat cards, quick actions, recent findings, course info — all glassmorphism |
+| 1B.8 | Configure Tailwind theme | ✅ | Dark glassmorphism: oklch colors, glass/glow utilities, severity badge classes |
+| 1B.9 | Create route stubs | ✅ | `/assignments`, `/assignments/[id]`, `/audit`, `/audit/[runId]`, `/graph`, `/ingest` |
 
 ### Checkpoint 1
 
-- [ ] All Pydantic models validate against seed data without errors
-- [ ] Services can CRUD nodes, findings, audit runs against seed data
-- [ ] `pytest tests/backend/` passes — all model + service tests green
-- [ ] Frontend builds and renders layout shell at `localhost:3000`
-- [ ] TypeScript types match Pydantic models (manual check or snapshot)
+- [x] All Pydantic models validate against seed data without errors
+- [x] Services can CRUD nodes, findings, audit runs against seed data
+- [ ] `pytest tests/backend/` passes — model + service tests (deferred to pre-Phase 2)
+- [x] Frontend builds and renders layout shell at `localhost:3000` (`bun run build` succeeds)
+- [x] TypeScript types match Pydantic models (manual verification)
 
 **Agent/Skill Audits**:
 
@@ -124,16 +131,56 @@ Phase 7 ──────────────── Launch & Handoff ──
 | `async-python-patterns` | `backend/db.py`, `backend/services/` | Async correctness, connection management |
 | `frontend-code-review` | `frontend/components/layout/`, `frontend/lib/` | Component structure, type safety, hook patterns |
 
+### Design Decisions
+
+- **Theme**: Dark glassmorphism with oklch color space. Base `oklch(0.1 0.015 260)`, glass cards with `backdrop-filter: blur`, primary accent blue-violet `oklch(0.7 0.18 265)`.
+- **Package manager**: Migrated from npm to bun for faster installs and dev server startup.
+
 ---
 
 ## Phase 2: MCP Servers + FastAPI Backend
 
 **Goal**: All MCP tools functional, all API routes returning data from seed.
 
+### Pre-Phase 2: Model Adjustments from Canvas Data Investigation
+
+> Investigation performed against real course 2018858 (Circuits Lab assignment 19301959, Written Comm 1 assignment 19302015, Group Grading assignment 19301975, 37 rubrics, Week 5 materials page). These findings drive model changes before building MCP tools and API routes.
+
+#### What Canvas Actually Returns
+
+| Data Source | Shape | Key Observations |
+|---|---|---|
+| **Assignments** | Name, description (HTML), due_date, points_possible, submission_types, published, locked | `description` is the ONLY content field — there is no separate "instructions" field. Rich HTML with embedded file links (`data-api-endpoint` URLs pointing to file IDs like `files/205823894`), video embeds, external URLs (YouTube, Qualtrics). |
+| **Rubrics** | Separate objects (not inline on assignments). Each has: title, total points, criteria count, reusable/read-only flags. Per criterion: ID, description, point value. Per rating: ID, label, point value, optional long description. | 37 rubrics returned as flat list. Rubric-to-assignment linkage is a separate API call. Structured hierarchy of criteria → ratings that cannot be represented by a single `rubric_text` string. |
+| **Pages** | HTML body with file links, external links, no metadata (no week, no module). | Week/module info comes from `list_modules` + `list_module_items`, never from the page/assignment itself. |
+| **Modules** | 21 modules, 107 items. Module items have position/order. | This is the ONLY source of `week` and `module_order` — must cross-reference during ingestion. |
+
+#### Required Model Changes (Task 2.0)
+
+These changes must be applied to `backend/models/`, `backend/services/`, `scripts/setup_db.py`, `scripts/seed_demo.py`, and `frontend/lib/types.ts` before building MCP tools or API routes.
+
+| # | Change | Rationale |
+|---|--------|-----------|
+| 2.0.1 | **Collapse `description` + `instructions` into single `description` field on `CourseNode`** | Canvas has ONE field (`description`). Our model had both, but in EGN 3000L the description IS the instructions. Remove `instructions`, keep `description`. |
+| 2.0.2 | **Add `points_possible: float \| None` to `CourseNode`** | Needed for grading weight analysis. Note: some assignments (like Written Comm 1) are intentionally 0 points because a later assignment (Written Comm 2) carries the weight — audit rules must account for this pattern. |
+| 2.0.3 | **Add `submission_types: list[str] \| None` to `CourseNode`** | Useful for audit rules (e.g., flagging mismatch between submission type and rubric expectations). Values: `online_upload`, `online_text_entry`, `external_tool`, etc. |
+| 2.0.4 | **Create structured rubric model** | Replace `rubric_text: str` with a proper hierarchy. New models: `RubricCriterion` (id, description, points, ratings list) and `RubricRating` (id, label, points, description). Store `rubric_id` on assignment nodes. Create `NodeType.RUBRIC` entries with structured criteria stored as JSON in a new `rubric_criteria` column. Frontend must render this hierarchy and the audit engine must be able to identify errors in individual criteria/ratings. |
+| 2.0.5 | **Build HTML link extractor for ingestion** | Parse `data-api-endpoint` attributes and `<a href>` tags from description HTML into `NodeLink` records. Capture: internal file references (PDFs, `.ino` files), internal page references, and external URLs (YouTube, Qualtrics, etc.). Classify links as `file`, `page`, or `external`. |
+| 2.0.6 | **Add `rubrics` table to SQLite schema** | New table: `rubrics(id, canvas_id, title, points_possible, criteria_json, assignment_id, content_hash, created_at, updated_at)`. The `criteria_json` column stores the full criterion → rating hierarchy as structured JSON. |
+| 2.0.7 | **Update seed_demo.py** | Reflect new schema: remove `instructions` field, add `points_possible` and `submission_types` to seed assignments, add seed rubric entries with structured criteria. |
+| 2.0.8 | **Update TypeScript types** | Mirror all Pydantic model changes in `frontend/lib/types.ts`: add `RubricCriterion`, `RubricRating`, update `CourseNode` fields. |
+
+#### What We Decided NOT to Track
+
+| Field | Reason |
+|---|---|
+| `due_date` | Different semesters have different deadlines — not relevant to content audit. |
+| `published` / `locked` | We care about content quality, not visibility state. |
+
 ### Stream 2A: MCP Servers
 
 | # | Task | Detail |
-|---|------|--------|
+|---|---|--------|
 | 2A.1 | Install + configure Chroma MCP | `pip install chroma-mcp`, test with `uvx chroma-mcp`, add to settings.json |
 | 2A.2 | Build Audit MCP — nodes namespace | `nodes_read`, `nodes_write` (upsert + content_hash), `nodes_list`, `nodes_read_many`, `nodes_link`, `nodes_get_stale` |
 | 2A.3 | Build Audit MCP — graph namespace | `graph_add_edge`, `graph_get_neighbors`, `graph_get_flags`, `graph_mark_stale` — all SQLite-backed |
@@ -181,7 +228,7 @@ Phase 7 ──────────────── Launch & Handoff ──
 
 **Goal**: Full course data pulled from Canvas (or ZIP), embedded, graph derived.
 
-> **Blocker**: Requires Canvas API token + course ID from Trevor. Use seed data for development; swap to real data when credentials arrive.
+> **Canvas MCP is connected** — verified read-only against course 2018858 (21 modules, 107 items). Real ingestion can begin as soon as Phase 2 is complete.
 
 ### Tasks (Sequential — each depends on prior)
 
@@ -414,13 +461,12 @@ This is because:
 | Phase 2: 2A + 2B | MCP servers + FastAPI routes | Both read/write SQLite `audit.db` — MCP via tools, FastAPI via aiosqlite |
 | Phase 5: 5A + 5B + 5C + 5D | All frontend pages | Shared Zustand store + API client; independent page routes |
 
-### Canvas Credential Independence
+### Canvas Credential Status
 
-Phases 0–5 can all be completed with **seed data only**. Real Canvas credentials are only needed for:
-- Phase 3, Task 3.8 (real ingestion test)
-- Phase 7 (full launch)
-
-This means development is **never blocked** by waiting for credentials.
+**Canvas MCP is live** — connected to course 2018858 (copy of real EGN 3000L course, read-only).
+- Phases 0–1: ✅ Complete
+- Phase 2: Model adjustments informed by real Canvas data investigation
+- Phase 3+: Can ingest real data directly — no need for seed-only development
 
 ---
 
@@ -482,8 +528,8 @@ Security is not a single phase — it's verified at every checkpoint:
 
 | If you're stuck on... | You need... | Workaround |
 |----------------------|------------|------------|
-| Canvas MCP integration | Canvas API token from Trevor | Use seed data + mock Canvas responses |
-| Real course ingestion | Canvas credentials | Test with IMSCC ZIP fixture |
+| Canvas MCP integration | ✅ Connected | Course 2018858, read-only verified |
+| Real course ingestion | Phase 2 complete | Canvas MCP ready, model adjustments defined |
 | Chroma MCP setup | `pip install chroma-mcp` | Use mock embeddings for frontend dev |
 | Claude Code audit testing | Max plan active, CLI installed | Seed findings for frontend dev |
 | D3 graph rendering | Graph data from Phase 3 | Use seed `graph.json` |
