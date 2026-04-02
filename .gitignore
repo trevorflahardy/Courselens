@@ -1,16 +1,16 @@
-# Default
+# Secrets & environment
 .env
+.env.local
+.env.*.local
 
-# Claude Code settings (contains machine-specific abs paths)
+# Claude Code settings (machine-specific)
 .claude/settings.local.json
 
-# NextJS
-.next
-out
-dist
-build
-.next-env.d.ts
-.next.config.js
+# Node / Next.js
+.next/
+out/
+dist/
+build/
 node_modules/
 
 # Python
@@ -21,8 +21,11 @@ __pycache__/
 env/
 .venv*/
 *.egg-info/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
 
-# Data (generated, not tracked)
+# Data — all generated/sensitive (student data, course content, DB)
 data/audit.db
 data/audit.db-wal
 data/audit.db-shm
@@ -30,3 +33,12 @@ data/chroma/*
 !data/chroma/.gitkeep
 data/files/*
 !data/files/.gitkeep
+
+# Canvas exports — contains student/course data, NEVER commit
+*.imscc
+*.imscc.zip
+*.zip
+
+# OS
+.DS_Store
+Thumbs.db
