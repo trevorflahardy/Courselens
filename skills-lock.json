@@ -1,0 +1,100 @@
+{
+  "version": 1,
+  "skills": {
+    "async-python-patterns": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "computedHash": "e2c6c594828cbbf4f0c181eedcf2bd39a2a49b4f087942b295faf36cdc88c423"
+    },
+    "backend-code-review": {
+      "source": "langgenius/dify",
+      "sourceType": "github",
+      "computedHash": "77087ca3d4c8fba12833dd954da166a9bb1fdb0ddbddf4e0a73a549712aa1b39"
+    },
+    "canvas-accessibility-auditor": {
+      "source": "vishalsachdev/canvas-mcp",
+      "sourceType": "github",
+      "computedHash": "d7401d888c3f7d062d51d09be184590c3eb584cee82a5346073f99d7731d6e45"
+    },
+    "canvas-bulk-grading": {
+      "source": "vishalsachdev/canvas-mcp",
+      "sourceType": "github",
+      "computedHash": "78ad259427fd19ef3e8d8d67cb4868f85c8141624b5dd190c906c9192457e061"
+    },
+    "canvas-course-builder": {
+      "source": "vishalsachdev/canvas-mcp",
+      "sourceType": "github",
+      "computedHash": "dec99327a0c9ce94b2eb601b687d53b6c8e1e95b5d8fae2045174684c5e92446"
+    },
+    "canvas-course-qc": {
+      "source": "vishalsachdev/canvas-mcp",
+      "sourceType": "github",
+      "computedHash": "908238328f4b7ce370daeb6ff2480a06d2409ce841b82d5534cae9770ace6bfd"
+    },
+    "canvas-discussion-facilitator": {
+      "source": "vishalsachdev/canvas-mcp",
+      "sourceType": "github",
+      "computedHash": "d71719856d35de4a6044b0db58615052e4d55b0a9fb02435fe92c56b51607318"
+    },
+    "canvas-morning-check": {
+      "source": "vishalsachdev/canvas-mcp",
+      "sourceType": "github",
+      "computedHash": "9749abde23e4724c5a1bf0c12a59e6762797346bd61a7080e07d9acff38a78ef"
+    },
+    "canvas-peer-review-manager": {
+      "source": "vishalsachdev/canvas-mcp",
+      "sourceType": "github",
+      "computedHash": "6c27ae4867274f17c3a89fbe7b9835fecf9ef1aad2ef7c48b37216a4ec0f67c5"
+    },
+    "canvas-week-plan": {
+      "source": "vishalsachdev/canvas-mcp",
+      "sourceType": "github",
+      "computedHash": "4a188d75eb8c9c75e598b2cfc1ef56b548686cd041691cbcefec05b4d6f46143"
+    },
+    "design-guide": {
+      "source": "paperclipai/paperclip",
+      "sourceType": "github",
+      "computedHash": "98ac5d4eba74071a9a1199a27a5c6453a755a1f1faaefe31d787985e4863ea6e"
+    },
+    "doc-maintenance": {
+      "source": "paperclipai/paperclip",
+      "sourceType": "github",
+      "computedHash": "ea9816e6f958fbf9f11ebd42067450d282bf1d5f486c7110f665185f78213687"
+    },
+    "frontend-code-review": {
+      "source": "langgenius/dify",
+      "sourceType": "github",
+      "computedHash": "79fa87cd5460c80dc842153155b26bd4a3cad9858475c2e1ee50cab6dcd1fbbe"
+    },
+    "frontend-testing": {
+      "source": "langgenius/dify",
+      "sourceType": "github",
+      "computedHash": "65108c13f0017191543bec88645f29a5665fa8daec4ab67ce1f1563d1ecf7f3f"
+    },
+    "morning-check": {
+      "source": "vishalsachdev/canvas-mcp",
+      "sourceType": "github",
+      "computedHash": "487426a1f17ff866421851fa82541a59a6a5a0c1acd939b8fe1678097f70c3eb"
+    },
+    "python-anti-patterns": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "computedHash": "5a6d1c378bbfc859a12fe08dda1e2b856af725ff3cc46ee38cea8bd03736abdb"
+    },
+    "python-type-safety": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "computedHash": "f011d9018935ae01209f30c0a0f9d2f15f3058867baeb7a8c820bc54c8394645"
+    },
+    "rag-implementation": {
+      "source": "wshobson/agents",
+      "sourceType": "github",
+      "computedHash": "fcf8874b44501e34362a3c31e231f922f3ea1376c8afaf92e8550f88287e1ca2"
+    },
+    "week-plan": {
+      "source": "vishalsachdev/canvas-mcp",
+      "sourceType": "github",
+      "computedHash": "d0601fb5152d3b1020393ea3b127c72d4010b2e52985af7dcafd22e16c7598b0"
+    }
+  }
+}
