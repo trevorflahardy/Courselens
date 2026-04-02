@@ -1,6 +1,9 @@
 # Default
 .env
 
+# Claude Code settings (contains machine-specific abs paths)
+.claude/settings.local.json
+
 # NextJS
 .next
 out
@@ -15,3 +18,4 @@ __pycache__/
 *.pyo
 *.pyd
 env/
+.venv*/
