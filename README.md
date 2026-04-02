@@ -137,7 +137,7 @@ course-audit/
 ├── backend/            # FastAPI + services + models
 ├── frontend/           # Next.js 15 dashboard
 ├── mcp/                # Custom Audit MCP server (FastMCP)
-├── data/               # Nodes, graph, ChromaDB, SQLite
+├── data/               # SQLite DB, ChromaDB embeddings, raw file blobs
 ├── scripts/            # Setup, seed, utilities
 └── tests/              # pytest + Vitest + Playwright
 ```
@@ -192,8 +192,10 @@ All other variables have sensible defaults for local development.
 - **Zero API costs** — All AI runs through Claude Code on the Max plan
 - **Official MCPs** — Uses battle-tested Chroma MCP and Canvas MCP instead of custom wrappers
 - **Single custom MCP** — One FastMCP composite server handles all domain-specific tools
+- **SQLite-primary storage** — All structured data in one DB file with change detection and finding lifecycle
 - **Live streaming** — Findings stream via SSE as the AI discovers them
-- **SQLite polling** — Simple, debuggable SSE bridge (no Unix sockets)
+- **Smart file ingestion** — Only downloads files actually referenced by assignments, not the entire Canvas file dump
+- **Fix-reaudit loop** — Content hash tracking detects changes, auto-marks findings stale, re-audit resolves or confirms
 - **Demo mode** — Fully functional without Canvas credentials or Claude Code
 
 ---

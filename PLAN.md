@@ -58,7 +58,7 @@ Phase 7 ──────────────── Launch & Handoff ──
 | 0.4 | Install shadcn/ui | `npx shadcn@latest init` + core components: Button, Card, Badge, Dialog, Table, Tabs, Select, Progress, Input, Sheet |
 | 0.5 | Create `.env.example` | All environment variables with comments |
 | 0.6 | Create `Makefile` | `setup`, `dev`, `seed`, `test`, `lint`, `check` targets |
-| 0.7 | Create `scripts/setup_db.py` | SQLite schema: `audit_runs`, `findings`, `ingest_log` tables with indexes |
+| 0.7 | Create `scripts/setup_db.py` | SQLite schema: `nodes`, `node_links`, `files`, `edges`, `findings`, `audit_runs`, `ingest_log` tables with indexes. WAL mode. |
 | 0.8 | Create `scripts/seed_demo.py` | 15 assignments, 3 pages, 2 rubrics, 1 lecture, 20 edges, 8 findings |
 | 0.9 | Create `CLAUDE.md` | Orchestrator instructions, tool reference, audit principles |
 | 0.10 | Configure `.claude/settings.json` | MCP server declarations (Chroma MCP, Audit MCP, Canvas MCP placeholder) |
@@ -69,7 +69,7 @@ Phase 7 ──────────────── Launch & Handoff ──
 
 - [ ] `make setup` runs without errors
 - [ ] `python scripts/seed_demo.py` creates all fixture data in `data/`
-- [ ] `data/nodes/` has 21 JSON files, `data/graph.json` exists, `data/findings.db` has tables
+- [ ] `data/audit.db` has all 7 tables, `data/files/` and `data/chroma/` directories exist
 - [ ] `cd frontend && npm run build` succeeds
 - [ ] `make lint` passes
 
@@ -87,9 +87,10 @@ Phase 7 ──────────────── Launch & Handoff ──
 |---|------|--------|
 | 1A.1 | Implement Pydantic models | `node.py`, `finding.py`, `audit.py`, `graph.py` — all with strict mode |
 | 1A.2 | Implement `db.py` | aiosqlite connection management, `init_db()` for migrations |
-| 1A.3 | Implement `node_service.py` | CRUD for `data/nodes/*.json` — read, write (with merge), list, batch read |
-| 1A.4 | Implement `finding_service.py` | SQLite CRUD — create finding, query by assignment/severity/run, create/complete run |
-| 1A.5 | Implement `graph_service.py` | Read-only NetworkX operations for API layer — load graph, get neighbors, get flags |
+| 1A.3 | Implement `node_service.py` | SQLite CRUD for nodes — read, upsert (with merge + content_hash), list, batch read, link |
+| 1A.4 | Implement `finding_service.py` | SQLite CRUD — create finding, lifecycle transitions (stale/resolved/superseded), query by assignment/severity/run |
+| 1A.5 | Implement `graph_service.py` | SQLite edge CRUD + NetworkX loader on demand — get neighbors, get flags, mark stale |
+| 1A.5b | Implement `file_service.py` | File download tracking, text extraction dispatch (pypdf/docx/html), hash computation |
 | 1A.6 | Write model tests | `tests/backend/test_models.py` — validation, serialization, strict mode |
 | 1A.7 | Write service tests | `tests/backend/test_services.py` — CRUD, merge logic, concurrent access |
 
@@ -134,9 +135,9 @@ Phase 7 ──────────────── Launch & Handoff ──
 | # | Task | Detail |
 |---|------|--------|
 | 2A.1 | Install + configure Chroma MCP | `pip install chroma-mcp`, test with `uvx chroma-mcp`, add to settings.json |
-| 2A.2 | Build Audit MCP — nodes namespace | `mcp/audit_mcp.py` — `nodes_read`, `nodes_write`, `nodes_list`, `nodes_read_many` |
-| 2A.3 | Build Audit MCP — graph namespace | `graph_add_node`, `graph_add_edge`, `graph_get_neighbors`, `graph_get_flags`, `graph_serialize` |
-| 2A.4 | Build Audit MCP — emit namespace | `emit_finding` — writes to SQLite via parameterized INSERT |
+| 2A.2 | Build Audit MCP — nodes namespace | `nodes_read`, `nodes_write` (upsert + content_hash), `nodes_list`, `nodes_read_many`, `nodes_link`, `nodes_get_stale` |
+| 2A.3 | Build Audit MCP — graph namespace | `graph_add_edge`, `graph_get_neighbors`, `graph_get_flags`, `graph_mark_stale` — all SQLite-backed |
+| 2A.4 | Build Audit MCP — emit namespace | `emit_finding` (records content_hash_at_creation), `emit_resolve_stale` (lifecycle transitions after re-audit) |
 | 2A.5 | Compose with FastMCP `mount()` | Mount all three namespaces into single server |
 | 2A.6 | Write MCP tests | `tests/mcp/test_audit_mcp.py` — tool contracts, merge logic, error handling |
 | 2A.7 | Validate Chroma MCP integration | Upsert seed nodes, query similar, verify metadata filtering works |
@@ -158,10 +159,10 @@ Phase 7 ──────────────── Launch & Handoff ──
 
 ### Checkpoint 2
 
-- [ ] `claude -p "test" --allowedTools mcp__audit__nodes_read` works (Audit MCP starts)
+- [ ] `claude -p "test" --allowedTools mcp__audit__nodes_read` works (Audit MCP starts + reads from SQLite)
 - [ ] Chroma MCP accepts upsert + returns query results for seed data
 - [ ] `uvicorn backend.main:app` starts without errors
-- [ ] All API routes return correct data from seed: `curl localhost:8000/api/nodes`
+- [ ] All API routes return correct data from SQLite seed: `curl localhost:8000/api/nodes`
 - [ ] SSE endpoint streams heartbeats: `curl localhost:8000/api/audit/test-run/stream`
 - [ ] `pytest tests/` — all tests pass
 
@@ -410,7 +411,7 @@ This is because:
 | Parallel Set | What Runs Together | Coordination Contract |
 |---|---|---|
 | Phase 1: 1A + 1B | Backend models + Frontend shell | TypeScript types mirror Pydantic models |
-| Phase 2: 2A + 2B | MCP servers + FastAPI routes | API routes read from `data/` that MCP servers write to |
+| Phase 2: 2A + 2B | MCP servers + FastAPI routes | Both read/write SQLite `audit.db` — MCP via tools, FastAPI via aiosqlite |
 | Phase 5: 5A + 5B + 5C + 5D | All frontend pages | Shared Zustand store + API client; independent page routes |
 
 ### Canvas Credential Independence

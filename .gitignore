@@ -1,0 +1,17 @@
+# Default
+.env
+
+# NextJS
+.next
+out
+dist
+build
+.next-env.d.ts
+.next.config.js
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+env/

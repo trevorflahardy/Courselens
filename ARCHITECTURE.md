@@ -61,8 +61,8 @@ Until these arrive: scaffold everything, seed demo data, build full UI with fixt
 | Frontend | **Next.js 15** (App Router) | Latest stable, RSC for static parts, file-based routing |
 | Vector DB | **ChromaDB** via **Chroma MCP** | Zero-server local RAG — official MCP exists, no custom wrapper needed |
 | Canvas Access | **Canvas MCP** (pre-existing) | 80+ tools for courses, assignments, rubrics, modules, pages, announcements |
-| Graph Store | **NetworkX** + `graph.json` on disk | Simple, inspectable, no extra service |
-| Relational | **SQLite** via `aiosqlite` | Findings log, audit runs, ingest log |
+| Graph Compute | **NetworkX** (in-memory, on-demand) | Loaded from SQLite edges for traversal — not a storage layer |
+| Primary DB | **SQLite** via `aiosqlite` | **All structured data**: nodes, findings, edges, audit runs, files, ingest log |
 | File Parsing | `pypdf`, `python-docx`, `beautifulsoup4` | PDF/DOCX/HTML text extraction from IMSCC fallback |
 | MCP Framework | **FastMCP** (Python) | Composable servers via `mount()`, minimal boilerplate |
 | Styling | **Tailwind CSS v4** + **shadcn/ui** | Modern utility-first CSS, accessible component primitives |
@@ -88,6 +88,12 @@ The original architecture used a Unix socket for real-time finding emission. Thi
 **Why Next.js 15 over 14:**
 Next.js 15 is the latest stable release with improved App Router performance, better Server Components support, and Turbopack stability. No reason to start a new project on 14.
 
+**Why SQLite-primary over JSON files:**
+The original architecture stored each course node as a separate JSON file in `data/nodes/`. This works for a read-only system but fails for the fix-reaudit loop: no ACID transactions, no change detection, no way to atomically invalidate findings when content updates, no relational queries across nodes/findings/edges, and concurrent writes from parallel audits can corrupt files. SQLite gives us all of this in a single file that's easy to back up.
+
+**Why keep raw files on filesystem instead of SQLite blobs:**
+PDFs and DOCXs are write-once reference material. SQLite can store blobs but there's no query benefit — we only need the extracted text (which goes in the `nodes` table). The filesystem is simpler for files that are just "download once, extract text, reference by path."
+
 ---
 
 ## Architecture Overview
@@ -104,9 +110,10 @@ Next.js 15 is the latest stable release with improved App Router performance, be
           ▼                           ▼               ▼
 ┌──────────────────┐  ┌────────────────┐  ┌─────────────────────┐
 │   Canvas LMS     │  │   ChromaDB     │  │  Local Data Store   │
-│   (remote API)   │  │  data/chroma/  │  │  data/nodes/*.json  │
-│                  │  │                │  │  data/graph.json    │
-└──────────────────┘  └────────────────┘  │  data/findings.db   │
+│   (remote API)   │  │  data/chroma/  │  │  data/audit.db      │
+│                  │  │                │  │  (nodes, edges,     │
+└──────────────────┘  └────────────────┘  │   findings, files)  │
+                                          │  data/files/        │
                                           └──────────┬──────────┘
                                                      │ reads
                                           ┌──────────▼──────────┐
@@ -125,12 +132,16 @@ Next.js 15 is the latest stable release with improved App Router performance, be
 ### Data Flow
 
 ```
-1. INGEST:   Canvas MCP ──→ Claude Code ──→ Audit MCP ──→ data/nodes/*.json
-2. EMBED:    data/nodes/ ──→ Claude Code ──→ Chroma MCP ──→ data/chroma/
-3. GRAPH:    nodes + Chroma MCP ──→ Claude Code ──→ Audit MCP ──→ data/graph.json
-4. AUDIT:    Audit MCP + Chroma MCP ──→ Claude Code ──→ emit_finding ──→ findings.db
-5. DISPLAY:  data/* ──→ FastAPI (REST+SSE) ──→ Next.js ──→ User
-6. RE-AUDIT: User fixes content ──→ re-triggers audit ──→ findings update ──→ node goes green
+1. INGEST:    Canvas MCP ──→ Claude Code ──→ Audit MCP ──→ SQLite (nodes table)
+              Files: download_course_file ──→ data/files/ ──→ extract text ──→ SQLite
+2. EMBED:     SQLite nodes ──→ Claude Code ──→ Chroma MCP ──→ data/chroma/
+3. GRAPH:     nodes + Chroma MCP ──→ Claude Code ──→ Audit MCP ──→ SQLite (edges table)
+4. AUDIT:     Audit MCP + Chroma MCP ──→ Claude Code ──→ emit_finding ──→ SQLite (findings)
+5. DISPLAY:   SQLite ──→ FastAPI (REST+SSE) ──→ Next.js ──→ User
+6. RE-INGEST: User fixes in Canvas ──→ re-pull node ──→ content_hash comparison
+              ──→ if changed: mark findings stale ──→ mark edges stale ──→ re-embed
+7. RE-AUDIT:  User triggers re-audit ──→ new findings ──→ old stale → resolved/superseded
+              ──→ node status recalculated ──→ node goes green
 ```
 
 ---
@@ -179,9 +190,10 @@ course-audit/
 │   └── services/
 │       ├── __init__.py
 │       ├── claude_runner.py         # Spawns Claude Code subprocess
-│       ├── node_service.py          # Node CRUD on data/nodes/
-│       ├── finding_service.py       # SQLite findings CRUD
-│       ├── graph_service.py         # NetworkX read operations for API
+│       ├── node_service.py          # Node CRUD (SQLite nodes table)
+│       ├── finding_service.py       # Finding CRUD + lifecycle (stale/resolved/superseded)
+│       ├── graph_service.py         # Edge CRUD + NetworkX loader for traversal
+│       ├── file_service.py          # File download, text extraction, hash tracking
 │       └── ingest/
 │           ├── __init__.py
 │           ├── canvas_zip.py        # IMSCC ZIP parser (fallback)
@@ -194,12 +206,12 @@ course-audit/
 │                                    # Mounts: nodes, graph, emit namespaces
 │
 ├── data/
-│   ├── nodes/                       # One JSON per course node (source of truth)
+│   ├── audit.db                     # SQLite: ALL structured data (nodes, edges,
+│   │                                #   findings, files, audit runs, ingest log)
+│   ├── chroma/                      # ChromaDB persistent storage (embeddings only)
 │   │   └── .gitkeep
-│   ├── chroma/                      # ChromaDB persistent storage
-│   │   └── .gitkeep
-│   ├── graph.json                   # Derived dependency graph (never hand-edit)
-│   └── findings.db                  # SQLite: findings, audit runs, ingest log
+│   └── files/                       # Raw file blobs (PDFs, DOCXs) downloaded from Canvas
+│       └── .gitkeep                 #   Named: {canvas_file_id}_{sanitized_name}.ext
 │
 ├── frontend/
 │   ├── app/
@@ -263,15 +275,24 @@ Three MCP servers. Two are off-the-shelf. One is custom.
 
 ### 1. Canvas MCP (Pre-existing — External)
 
-Trevor's existing Canvas MCP provides direct access to Canvas LMS via API:
+[vishalsachdev/canvas-mcp](https://github.com/vishalsachdev/canvas-mcp) — 90+ tools, v1.1.0. Key tools for our ingestion:
 
-- **Courses**: list, get details, settings
-- **Modules**: structure, ordering, items within each module
-- **Assignments**: full text, rubrics, due dates, submission types
-- **Rubrics**: criteria, point values, descriptions per level
-- **Pages**: wiki/content pages with HTML body
-- **Announcements**: all announcements (critical for finding "patches" to broken instructions)
-- **Files**: course file listings and metadata
+| Tool | What We Use It For |
+|------|-------------------|
+| `get_course_structure` | Full module→items tree in one call (our starting point) |
+| `list_modules` / `list_module_items` | Module ordering and item membership |
+| `get_assignment_details` | Full instructions, due dates, submission types, attachment refs |
+| `list_all_rubrics` / `get_rubric_details` | Rubric criteria + point values (read-only — cannot create/update) |
+| `list_pages` / `get_page_content` | Wiki pages with HTML body (parse for file links) |
+| `list_course_files` | All files in course storage |
+| `download_course_file` | Download specific files by ID |
+| `create_announcement` / list | Announcements (contain "patches" to broken instructions) |
+
+**What it cannot do**: Create/update rubrics (Canvas API bug), create/delete courses, modify course settings. Rubric creation must happen in the Canvas UI.
+
+**File linking limitation**: `list_course_files` returns ALL files in the course — including unused ones. File→assignment linking must be **derived** by parsing assignment HTML bodies and page content for `/files/{id}` references. Claude Code handles this reasoning during ingestion.
+
+**Rate limits**: ~700 requests/10 min. Ingestion uses batching with `max_concurrent=5`.
 
 **Setup**: Configured in `.claude/settings.json` per Canvas MCP docs. Requires `CANVAS_API_TOKEN` and `CANVAS_BASE_URL`.
 
@@ -300,30 +321,32 @@ The [official Chroma MCP server](https://github.com/chroma-core/chroma-mcp) from
 
 One FastMCP server at `mcp/audit_mcp.py` using FastMCP's `mount()` to compose three namespaces into a single process:
 
-**`nodes_` namespace** — Course node CRUD:
+**`nodes_` namespace** — Course node CRUD (all backed by SQLite `nodes` table):
 
 | Tool | Purpose |
 |------|---------|
-| `nodes_read(node_id)` | Read a course node JSON by ID |
-| `nodes_write(node_id, data)` | Write or merge a node (preserves existing fields on merge) |
-| `nodes_list(type?, week?)` | List node IDs with optional filters |
+| `nodes_read(node_id)` | Read a course node by ID |
+| `nodes_write(node_id, data)` | Upsert node — inserts or merges (preserves existing fields). Auto-computes `content_hash`. |
+| `nodes_list(type?, week?, status?)` | List nodes with optional filters |
 | `nodes_read_many(ids)` | Batch read multiple nodes |
+| `nodes_link(source_id, target_id, link_type)` | Create a node-to-node link (file, page, assignment) |
+| `nodes_get_stale()` | List nodes whose content changed since last audit |
 
-**`graph_` namespace** — Dependency graph operations:
+**`graph_` namespace** — Dependency graph (SQLite `edges` table + NetworkX for traversal):
 
 | Tool | Purpose |
 |------|---------|
-| `graph_add_node(id, attrs)` | Add node to NetworkX graph |
-| `graph_add_edge(source, target, type, label, ...)` | Add directed edge with metadata |
-| `graph_get_neighbors(id)` | Get upstream (predecessors) + downstream (successors) |
+| `graph_add_edge(source, target, type, label, ...)` | Add directed edge with metadata to SQLite |
+| `graph_get_neighbors(id)` | Get upstream + downstream nodes (loads NetworkX on demand) |
 | `graph_get_flags()` | All nodes with gap/orphan status |
-| `graph_serialize()` | Persist full graph to `data/graph.json` |
+| `graph_mark_stale(node_id)` | Mark all edges from/to this node as stale (for re-derivation) |
 
 **`emit_` namespace** — Audit finding emission:
 
 | Tool | Purpose |
 |------|---------|
-| `emit_finding(assignment_id, audit_run_id, severity, finding_type, title, body, pass_number, ...)` | Write finding to SQLite immediately. Dashboard polls this. |
+| `emit_finding(assignment_id, audit_run_id, severity, finding_type, title, body, pass_number, ...)` | Write finding to SQLite immediately. Records `content_hash_at_creation` for change detection. |
+| `emit_resolve_stale(assignment_id)` | After re-audit: mark unmatched stale findings as `resolved`, matched ones as `confirmed` or `superseded`. |
 
 **Config** (`.claude/settings.json`):
 ```json
@@ -332,9 +355,8 @@ One FastMCP server at `mcp/audit_mcp.py` using FastMCP's `mount()` to compose th
     "command": "python",
     "args": ["mcp/audit_mcp.py"],
     "env": {
-      "NODES_DIR": "./data/nodes",
-      "GRAPH_PATH": "./data/graph.json",
-      "DB_PATH": "./data/findings.db"
+      "DB_PATH": "./data/audit.db",
+      "FILES_DIR": "./data/files"
     }
   }
 }
@@ -349,13 +371,15 @@ FastMCP's `mount()` combines multiple tool namespaces into a single stdio proces
 
 All Python models use **Pydantic v2 strict mode** (`model_config = {"strict": True}`). TypeScript types in `frontend/lib/types.ts` mirror them exactly — keep in sync manually or generate via `openapi-typescript`.
 
-### CourseNode (`backend/models/node.py`)
+**Storage**: All structured data lives in **SQLite** (`data/audit.db`). Pydantic models are the Python API; SQLite tables are the persistence layer. Raw file blobs live in `data/files/`.
 
-Core entity. One JSON file per node in `data/nodes/{id}.json`.
+### CourseNode (`backend/models/node.py` → SQLite `nodes` table)
+
+Core entity representing any piece of course content.
 
 | Field | Type | Purpose |
 |-------|------|---------|
-| `id` | `str` | Unique identifier |
+| `id` | `str` PK | Unique identifier |
 | `type` | `NodeType` | assignment, page, rubric, lecture, announcement, file |
 | `title` | `str` | Display name |
 | `week` | `int?` | Course week number |
@@ -364,27 +388,53 @@ Core entity. One JSON file per node in `data/nodes/{id}.json`.
 | `description` | `str?` | Inline Canvas HTML stripped to text |
 | `instructions` | `str?` | Full instruction text |
 | `rubric_text` | `str?` | Rubric criteria as text |
-| `linked_files` | `list[str]` | Referenced filenames |
-| `linked_pages` | `list[str]` | Referenced page IDs |
-| `linked_assignments` | `list[str]` | Referenced assignment IDs |
-| `file_content` | `str?` | Extracted text from PDF/DOCX |
-| `file_path` | `str?` | Path in data/nodes/files/ |
-| `status` | `NodeStatus` | ok, warn, gap, orphan, unaudited |
-| `last_audited` | `datetime?` | Timestamp of last audit |
-| `finding_count` | `int` | Total findings for this node |
+| `file_content` | `str?` | Extracted text from PDF/DOCX (raw file in `data/files/`) |
+| `file_path` | `str?` | Path to raw file in `data/files/` |
 | `canvas_url` | `str?` | Link back to Canvas |
-| `source` | `str` | "canvas_mcp", "file_dump", "merged" |
-| `extracted_at` | `datetime` | When this node was created |
+| `source` | `str` | "canvas_mcp", "zip_import", "merged" |
+| `status` | `NodeStatus` | ok, warn, gap, orphan, unaudited |
+| `content_hash` | `str` | SHA-256 of instructions + rubric_text + description — **change detection** |
+| `last_audited` | `datetime?` | Timestamp of last audit |
+| `finding_count` | `int` | Active finding count (computed) |
+| `created_at` | `datetime` | When first ingested |
+| `updated_at` | `datetime` | When last modified |
 
-### Finding (`backend/models/finding.py`)
+### NodeLink (`backend/models/node.py` → SQLite `node_links` table)
 
-Audit output. Stored in SQLite `findings` table.
+Replaces the old `linked_files`, `linked_pages`, `linked_assignments` arrays with a proper relational table.
 
 | Field | Type | Purpose |
 |-------|------|---------|
-| `id` | `str` | UUID |
-| `assignment_id` | `str` | Which node this finding is about |
-| `audit_run_id` | `str` | Which audit run produced this |
+| `source_id` | `str` FK | Node that references another |
+| `target_id` | `str` FK | Node being referenced |
+| `link_type` | `str` | "file", "page", "assignment" |
+
+Composite PK: `(source_id, target_id, link_type)`.
+
+### CourseFile (`backend/models/file.py` → SQLite `files` table)
+
+Tracks downloaded files with change detection.
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `id` | `str` PK | Canvas file ID |
+| `filename` | `str` | Original filename |
+| `local_path` | `str` | `data/files/{id}_{sanitized_name}.ext` |
+| `content_type` | `str?` | MIME type (application/pdf, etc.) |
+| `size_bytes` | `int?` | File size |
+| `extracted_text` | `str?` | Text extracted by pypdf/python-docx |
+| `text_hash` | `str?` | SHA-256 of extracted text — change detection on re-pull |
+| `downloaded_at` | `datetime` | When downloaded |
+
+### Finding (`backend/models/finding.py` → SQLite `findings` table)
+
+Audit output with **lifecycle tracking** for the fix-reaudit loop.
+
+| Field | Type | Purpose |
+|-------|------|---------|
+| `id` | `str` PK | UUID |
+| `assignment_id` | `str` FK | Which node this finding is about |
+| `audit_run_id` | `str` FK | Which audit run produced this |
 | `severity` | `FindingSeverity` | gap, warn, info, ok |
 | `finding_type` | `FindingType` | See taxonomy below |
 | `title` | `str` | Short finding headline |
@@ -392,7 +442,21 @@ Audit output. Stored in SQLite `findings` table.
 | `linked_node` | `str?` | Related node ID (if cross-reference) |
 | `evidence` | `str?` | Quoted text that triggered this |
 | `pass_number` | `int` | 1=clarity, 2=dependencies, 3=forward_impact |
+| `status` | `FindingStatus` | **active**, stale, resolved, superseded, confirmed |
+| `content_hash_at_creation` | `str` | Node's `content_hash` when finding was created |
+| `superseded_by` | `str?` FK | Finding ID that replaced this one (if superseded) |
 | `created_at` | `datetime` | When emitted |
+| `resolved_at` | `datetime?` | When status changed from active |
+
+**Finding lifecycle states:**
+
+| Status | Meaning | How it gets here |
+|--------|---------|-----------------|
+| `active` | Current, valid finding | Emitted by audit |
+| `stale` | Node content changed since this finding was created | Auto-set when `content_hash` changes on re-ingest |
+| `resolved` | Re-audit ran, finding no longer reproduced (fix worked) | Auto-set by `emit_resolve_stale` after re-audit |
+| `superseded` | Re-audit produced an updated version of this finding | Auto-set, `superseded_by` points to new finding |
+| `confirmed` | Re-audit ran, same issue still exists | Auto-set when re-audit produces matching finding |
 
 ### Finding Taxonomy
 
@@ -421,19 +485,22 @@ Audit output. Stored in SQLite `findings` table.
 | `curriculum_gap` | Time gap where bridging content should exist | Nothing between Weeks 8–11 introduces iteration; Week 11 requires it |
 | `broken_file_link` | References a file that doesn't exist | Assignment links to a template that's missing from course files |
 
-### GraphEdge (`backend/models/graph.py`)
+### GraphEdge (`backend/models/graph.py` → SQLite `edges` table)
 
-Directed relationship between nodes. Stored in `data/graph.json`.
+Directed relationship between nodes. Stored in SQLite, loaded into NetworkX on demand for traversal.
 
 | Field | Type | Purpose |
 |-------|------|---------|
-| `source` | `str` | Source node ID |
-| `target` | `str` | Target node ID |
+| `source` | `str` FK | Source node ID |
+| `target` | `str` FK | Target node ID |
 | `edge_type` | `EdgeType` | explicit, inferred, artifact, gap |
 | `label` | `str` | Human-readable description |
 | `evidence` | `str?` | Why this edge exists |
 | `confidence` | `float?` | 0.0–1.0 for inferred edges |
+| `status` | `str` | active, stale (marked when source/target content changes) |
 | `derived_at` | `datetime` | When this edge was created |
+
+Composite PK: `(source, target, edge_type)`.
 
 **Edge types** (from APP.md):
 
@@ -461,9 +528,21 @@ Execution record. Stored in SQLite `audit_runs` table.
 | `finished_at` | `datetime?` | When audit completed |
 | `error_message` | `str?` | Error details if failed |
 
-### SQLite Schema
+### SQLite Schema Summary
 
-Three tables: `audit_runs`, `findings`, `ingest_log`. Key indexes on `findings(assignment_id)`, `findings(severity)`, `findings(audit_run_id)`, `audit_runs(assignment_id)`. Full DDL lives in `scripts/setup_db.py`.
+Seven tables in `data/audit.db`. Full DDL lives in `scripts/setup_db.py`.
+
+| Table | Purpose | Key Indexes |
+|-------|---------|------------|
+| `nodes` | All course content | `type`, `week`, `status`, `content_hash` |
+| `node_links` | Node-to-node references | Composite PK `(source_id, target_id, link_type)` |
+| `files` | Downloaded file metadata + extracted text | `filename` |
+| `edges` | Dependency graph | Composite PK `(source, target, edge_type)`, `status` |
+| `findings` | Audit findings with lifecycle | `assignment_id`, `severity`, `audit_run_id`, `status` |
+| `audit_runs` | Audit execution records | `assignment_id`, `status` |
+| `ingest_log` | Ingestion event log | `node_id`, `status` |
+
+**SQLite configuration**: WAL mode enabled for concurrent reads during SSE polling. Foreign keys enforced.
 
 ---
 
@@ -518,24 +597,51 @@ When an audit is triggered:
 
 ### Primary: Canvas MCP (API-driven)
 
-Claude Code uses the Canvas MCP to walk the entire course structure:
+Claude Code uses the Canvas MCP to walk the course. The key insight: **only download files that are actually referenced by assignments or pages** — not everything in Canvas file storage.
 
-1. **Module walk** — List all modules, then list items per module. Record: title, URL, type, module name, module order, item order.
-2. **Assignment extraction** — For each assignment: get full description, instructions, due dates, submission types. Get rubric with all criteria, point values, and level descriptions.
-3. **Page extraction** — For each wiki page: get HTML body, extract links to other pages and assignments, strip to plain text.
-4. **Announcement extraction** — Get all announcements chronologically. Flag any that reference an assignment by name (these often contain patches to broken instructions).
-5. **File inventory** — List all course files. Match to assignments that reference them.
-6. **Node writing** — Use `audit.nodes_write()` for each extracted item. Set `source: "canvas_mcp"`.
+**Step 1 — Structure walk:**
+- `get_course_structure` → full module→items tree in one call
+- Record: module names, ordering, item types, item IDs
+
+**Step 2 — Assignment extraction (batches of 5, respecting rate limits):**
+- `get_assignment_details` for each → full instructions, due dates, submission types
+- `get_rubric_details` for each assignment's rubric → criteria, point values, level descriptions
+- Parse instruction HTML for `/files/{id}` links → build the "used files" set
+- `nodes_write()` each assignment to SQLite. Set `source: "canvas_mcp"`
+
+**Step 3 — Page extraction (batches of 5):**
+- `get_page_content` for each → HTML body
+- Parse for file links and assignment references → add to "used files" set
+- `nodes_write()` each page, `nodes_link()` to referenced nodes
+
+**Step 4 — File download (only referenced files):**
+- From Steps 2+3, we have a set of Canvas file IDs actually used by course content
+- `download_course_file` for each file in the used set only
+- Save to `data/files/{id}_{name}.ext`
+- Extract text (pypdf/python-docx/beautifulsoup4) → store in `files` table
+- `nodes_link()` each file to its referencing assignment/page
+- **Files NOT in the used set are never downloaded** — no junk, no clutter
+
+**Step 5 — Announcement extraction:**
+- Get all announcements chronologically
+- Flag any that reference an assignment by name (these contain "patches" to broken instructions)
+- `nodes_write()` each as announcement type
+
+**Step 6 — Cross-linking:**
+- For every node, verify `node_links` are bidirectional where appropriate
+- Flag broken file links (assignment references a file ID that doesn't exist in Canvas)
 
 ### Fallback: IMSCC ZIP Parser
 
-If Canvas API access is limited, parse the Canvas export ZIP via `backend/services/ingest/canvas_zip.py`:
+Kept as a backup for when Canvas API access is unavailable (token expired, institutional restrictions, offline development). Parses the Canvas export ZIP via `backend/services/ingest/canvas_zip.py`:
 
-- `imsmanifest.xml` → resource index with IDs and types
+- `imsmanifest.xml` → resource-to-assignment mappings (actually better for file linking than the API)
 - `course_settings/module_meta.xml` → module ordering
 - `wiki_content/` → HTML pages
 - `web_resources/` → PDF/DOCX file attachments
 - `assignment_groups/` → assignment XMLs with rubric data
+
+Only extracts files that appear in the manifest's resource list — not the full ZIP contents.
 
 Text extraction: `pypdf` for PDFs, `python-docx` for DOCX, `beautifulsoup4` for HTML. Concurrent extraction with `asyncio.Semaphore(10)`.
 
@@ -546,12 +652,25 @@ After nodes are populated (by either method):
 1. **Embedding pass** (`/embed-all`) — For each node, build embedding text from `title + description + instructions[:2000]`, upsert to ChromaDB via Chroma MCP with metadata `{type, week, module, status}`. Batches of 20, skip nodes with no text content.
 
 2. **Graph derivation** (`/rebuild-graph`) — For each assignment node ordered by week:
-   - Add to graph
-   - `linked_assignments` / `linked_pages` → add `explicit` edges
+   - Add edges from `node_links` → `explicit` type
    - Query Chroma MCP for similar prior-week nodes → reason about dependency → add `inferred` edges with confidence scores
    - No incoming edges + week > 1 → flag as `orphan`
    - Format incompatibilities between linked nodes → add `gap` edges
-   - Persist via `graph_serialize()`
+
+### Re-Ingestion (Change Detection)
+
+When the user clicks "Refresh from Canvas" on a node (or re-runs full ingestion):
+
+1. Pull updated content via Canvas MCP
+2. Compute new `content_hash` (SHA-256 of instructions + rubric_text + description)
+3. Compare to stored hash in SQLite
+4. **If unchanged** → skip, no action needed
+5. **If changed** →
+   - Update node content + hash + `updated_at` in SQLite
+   - `UPDATE findings SET status='stale' WHERE assignment_id=? AND status='active'`
+   - `UPDATE edges SET status='stale' WHERE source=? OR target=?`
+   - Re-embed in ChromaDB
+   - Dashboard shows: "Node updated. N findings now stale. Re-audit?"
 
 ---
 
@@ -778,10 +897,9 @@ make check      # Verify all dependencies installed
 ### Environment Variables (`.env`)
 
 ```
-NODES_DIR=./data/nodes
+DB_PATH=./data/audit.db
 CHROMA_DIR=./data/chroma
-GRAPH_PATH=./data/graph.json
-DB_PATH=./data/findings.db
+FILES_DIR=./data/files
 CANVAS_API_TOKEN=       # [PENDING] From Trevor
 CANVAS_BASE_URL=        # [PENDING] From Trevor
 CANVAS_COURSE_ID=       # [PENDING] From Trevor
@@ -795,10 +913,12 @@ CLAUDE_BIN=claude
 
 1. **No API key needed.** Claude Code runs via `claude` CLI on the Max plan. Never import `anthropic` directly.
 2. **Pydantic strict mode everywhere.** Every model: `model_config = {"strict": True}`.
-3. **ChromaDB is accessed only via Chroma MCP.** No direct `import chromadb` in backend code. The backend reads nodes from `data/nodes/` and findings from SQLite — it doesn't touch the vector DB.
-4. **`graph.json` is never hand-edited.** Always written by Audit MCP graph tools or `/rebuild-graph`.
-5. **Demo mode works fully offline.** Seed data enables complete frontend + backend testing without Canvas access or Claude Code.
-6. **Findings are emitted immediately.** Never batch until end of pass. The dashboard streams them live — that's the core UX.
-7. **MCP servers are declared in `.claude/settings.json`.** Claude Code starts them automatically. FastAPI does NOT manage MCP server lifecycle.
-8. **Evidence is mandatory.** Every finding must include the `evidence` field — the exact quoted text that triggered it. "Instructions could be clearer" is never acceptable.
-9. **The fix-reaudit loop is the product.** Design every feature to support: see finding → fix content → re-audit → watch it go green.
+3. **SQLite is the single source of truth.** All structured data (nodes, edges, findings, files) lives in `data/audit.db`. No JSON files for nodes, no `graph.json`. ChromaDB stores only embeddings.
+4. **ChromaDB is accessed only via Chroma MCP.** No direct `import chromadb` in backend code.
+5. **Filesystem is only for raw blobs.** `data/files/` holds PDFs/DOCXs. Extracted text goes into SQLite. Never query the filesystem for course data.
+6. **Demo mode works fully offline.** Seed data populates SQLite — enables complete frontend + backend testing without Canvas access or Claude Code.
+7. **Findings are emitted immediately.** Never batch until end of pass. The dashboard streams them live — that's the core UX.
+8. **MCP servers are declared in `.claude/settings.json`.** Claude Code starts them automatically. FastAPI does NOT manage MCP server lifecycle.
+9. **Evidence is mandatory.** Every finding must include the `evidence` field — the exact quoted text that triggered it. "Instructions could be clearer" is never acceptable.
+10. **Content hashes drive the re-audit loop.** Every `nodes_write()` auto-computes `content_hash`. When it changes, findings go stale automatically. This is the foundation of: fix content → re-ingest → stale findings → re-audit → resolved/confirmed.
+11. **Only download referenced files.** During Canvas MCP ingestion, parse assignment/page HTML for file references first. Never bulk-download all course files.
