@@ -1,1455 +1,735 @@
-# Canvas Course Audit System — Full Architecture
+# Canvas Course Audit System — Architecture
 
-> **For the implementing model:** Read this entire document before writing a single line of code.
-> This is a living spec. Sections marked `[PLACEHOLDER]` require assets from Trevor before
-> implementation. Everything else can be scaffolded immediately. When in doubt, ask.
+> **Living spec.** Read [APP.md](./APP.md) first for the vision and problem statement.
+> Sections marked `[PENDING]` require inputs from Trevor before implementation.
+> Everything else can be scaffolded immediately in demo mode.
 
 ---
 
-## What Trevor Needs to Provide Before Full Implementation
+## Table of Contents
 
-The following are **blockers** for specific phases. Scaffold everything else first.
-
-| #   | What                                               | Why needed                         | Which phase |
-| --- | -------------------------------------------------- | ---------------------------------- | ----------- |
-| 1   | Canvas course export ZIP (IMSCC or flat file dump) | Drives bulk ingestion pipeline     | Phase 1     |
-| 2   | Canvas course URL + session cookies OR API token   | Agent browser navigation           | Phase 1     |
-| 3   | List of course modules and their order             | Validates graph structure          | Phase 1     |
-| 4   | Confirmation of local machine OS (macOS assumed)   | MCP server paths, ChromaDB install | Setup       |
-| 5   | Preferred project root directory path              | All absolute paths in config       | Setup       |
-
-Until these arrive, implement: full project scaffold, all MCP servers with mock data, NextJS
-frontend with static fixtures, bridge server, and slash commands. The system should be
-fully runnable in "demo mode" with seeded fake assignments before any real Canvas data lands.
+1. [System Goals](#system-goals)
+2. [Inputs Required](#inputs-required-from-trevor)
+3. [Tech Stack](#tech-stack)
+4. [Architecture Overview](#architecture-overview)
+5. [Directory Structure](#directory-structure)
+6. [MCP Server Strategy](#mcp-server-strategy)
+7. [Data Models](#data-models)
+8. [Backend API](#backend-api)
+9. [Canvas Ingestion Pipeline](#canvas-ingestion-pipeline)
+10. [AI Audit Engine](#ai-audit-engine)
+11. [Frontend Architecture](#frontend-architecture)
+12. [Testing Strategy](#testing-strategy)
+13. [Security Considerations](#security-considerations)
+14. [Error Handling](#error-handling)
+15. [Accessibility](#accessibility)
+16. [Performance Considerations](#performance-considerations)
+17. [Setup & Installation](#setup--installation)
+18. [Implementer Notes](#notes-for-implementers)
 
 ---
 
 ## System Goals
 
-1. **Bulk ingest** an entire Canvas course — files, pages, assignments, rubrics, lectures,
-   announcements — into a structured local data store, with relational context preserved.
-2. **Run AI audits** per assignment (and across assignments) using Claude Code as the AI engine,
-   streaming findings live to a web dashboard.
-3. **Visualize** the full dependency graph of the course — assignments that build on each other,
-   gaps, orphans, rubric mismatches — as an interactive force-directed graph.
-4. **Never pay API costs.** Everything runs through Claude Code on the Max plan.
+1. **Bulk ingest** an entire Canvas LMS course (EGN 3000L at USF) — assignments, rubrics, pages, lectures, files, announcements — into a structured local data store with relational context preserved.
+2. **Run AI audits** per assignment (and cross-assignment) using Claude Code as the AI engine, streaming findings live to a web dashboard.
+3. **Visualize** the full dependency graph — assignments that build on each other, gaps, orphans, rubric mismatches — as an interactive force-directed graph.
+4. **Enable the fix-reaudit loop.** An instructor sees a finding, fixes the content, re-runs the audit on that one assignment, and watches the node go green. Not a one-time report — a living audit layer.
+5. **Zero API costs.** All AI operations run through Claude Code on the Max plan.
+
+---
+
+## Inputs Required from Trevor
+
+| # | What | Why | Blocks |
+|---|------|-----|--------|
+| 1 | Canvas API token | Canvas MCP authentication | Phase 3 |
+| 2 | Canvas course URL / course ID | Target course for ingestion | Phase 3 |
+| 3 | Canvas course export ZIP (IMSCC) | Fallback ingestion if API limits arise | Phase 3 |
+| 4 | Confirmation of machine OS (macOS assumed) | Path conventions, install commands | Phase 0 |
+
+Until these arrive: scaffold everything, seed demo data, build full UI with fixtures. The system should be fully runnable in "demo mode" with seeded fake assignments before any real Canvas data lands.
 
 ---
 
 ## Tech Stack
 
-| Layer        | Choice                                         | Reason                                                                         |
-| ------------ | ---------------------------------------------- | ------------------------------------------------------------------------------ |
-| AI engine    | Claude Code CLI (`claude`)                     | Max plan, no token billing, native MCP, `--output-format stream-json`          |
-| Backend      | **FastAPI** + **uvicorn** + **asyncio**        | Async-native, Pydantic v2 strict typing, SSE via `StreamingResponse`           |
-| Frontend     | **Next.js 14** (App Router)                    | File-based routing handles many assignment pages cleanly, RSC for static parts |
-| Vector DB    | **ChromaDB** (embedded)                        | Zero-server local RAG, Python-native                                           |
-| Graph store  | **NetworkX** in-memory + `graph.json` on disk  | Simple, inspectable, no extra service                                          |
-| Relational   | **SQLite** via `aiosqlite`                     | Findings log, audit runs, node metadata                                        |
-| File parsing | `pypdf`, `python-docx`, `beautifulsoup4`       | PDF/DOCX/HTML extraction                                                       |
-| MCP servers  | **FastMCP** (Python)                           | Minimal boilerplate, matches Claude Code's MCP protocol                        |
-| Bridge       | FastAPI SSE endpoint (same process as backend) | No separate Node server needed                                                 |
-| Styling      | **Tailwind CSS v4** + **shadcn/ui**            | Matches the modern Canvas aesthetic we're building toward                      |
-| State        | **Zustand** (frontend)                         | Lightweight, works well with SSE-driven updates                                |
-| HTTP client  | **axios** (frontend)                           | SSE via `EventSource` API natively                                             |
+| Layer | Choice | Rationale |
+|-------|--------|-----------|
+| AI Engine | **Claude Code CLI** (`claude`) | Max plan, no token billing, native MCP, `--output-format stream-json` |
+| Backend | **FastAPI** + **uvicorn** + **asyncio** | Async-native, Pydantic v2 strict typing, SSE via `StreamingResponse` |
+| Frontend | **Next.js 15** (App Router) | Latest stable, RSC for static parts, file-based routing |
+| Vector DB | **ChromaDB** via **Chroma MCP** | Zero-server local RAG — official MCP exists, no custom wrapper needed |
+| Canvas Access | **Canvas MCP** (pre-existing) | 80+ tools for courses, assignments, rubrics, modules, pages, announcements |
+| Graph Store | **NetworkX** + `graph.json` on disk | Simple, inspectable, no extra service |
+| Relational | **SQLite** via `aiosqlite` | Findings log, audit runs, ingest log |
+| File Parsing | `pypdf`, `python-docx`, `beautifulsoup4` | PDF/DOCX/HTML text extraction from IMSCC fallback |
+| MCP Framework | **FastMCP** (Python) | Composable servers via `mount()`, minimal boilerplate |
+| Styling | **Tailwind CSS v4** + **shadcn/ui** | Modern utility-first CSS, accessible component primitives |
+| State | **Zustand** | Lightweight, SSE-friendly reactive state |
+| HTTP Client | Native **`fetch`** + **`EventSource`** | Browser APIs handle REST and SSE natively — no axios needed |
+| Pkg Managers | **uv** (Python) / **npm** (JS) | Fast, modern dependency resolution |
+| Testing | **pytest** / **Vitest** / **Playwright** | Backend / frontend unit / e2e |
 
-### Why FastAPI as both backend AND bridge
+### Key Architectural Decisions
 
-Claude Code subprocess output is just stdout lines. FastAPI can spawn subprocesses and stream
-their stdout as SSE using `asyncio.create_subprocess_exec` + `StreamingResponse`. No separate
-Node bridge server needed — one Python process handles everything.
+**Why official MCP servers over custom wrappers:**
+The original architecture proposed 4 custom MCP servers including a ChromaDB wrapper and a filesystem server. Both ChromaDB and filesystem have official MCP implementations. Using them eliminates ~300 lines of custom code, gets upstream updates, and follows MCP best practices. We build custom MCP tools only for domain-specific operations (node CRUD with merge logic, graph traversal, finding emission).
+
+**Why Canvas MCP over browser automation:**
+The original architecture proposed agent browser navigation with session cookies. The Canvas MCP provides direct API access to all course data — more reliable, faster, no cookie management, and the user already has it.
+
+**Why FastAPI as both backend AND SSE bridge:**
+Claude Code subprocess output is stdout lines. FastAPI spawns subprocesses and streams their stdout as SSE using `asyncio.create_subprocess_exec` + `StreamingResponse`. One Python process handles everything — no separate bridge server.
+
+**Why SQLite polling over Unix sockets for SSE:**
+The original architecture used a Unix socket for real-time finding emission. This is fragile and platform-specific. Instead: the `emit_finding` tool writes findings to SQLite, and the FastAPI SSE endpoint polls with `WHERE created_at > ? AND audit_run_id = ?` every 500ms. Simpler, debuggable, works on all platforms, and 500ms latency is imperceptible for an audit dashboard.
+
+**Why Next.js 15 over 14:**
+Next.js 15 is the latest stable release with improved App Router performance, better Server Components support, and Turbopack stability. No reason to start a new project on 14.
 
 ---
 
-## Project Directory Structure
+## Architecture Overview
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                       Claude Code CLI                        │
+│   (Max plan — spawned as subprocess by FastAPI)              │
+│                                                              │
+│   Connects to:  Canvas MCP  │  Chroma MCP  │  Audit MCP     │
+│                 (courses)    │  (RAG)       │  (domain ops)  │
+└─────────┬────────────────────┴──────┬───────┴───────┬────────┘
+          │                           │               │
+          ▼                           ▼               ▼
+┌──────────────────┐  ┌────────────────┐  ┌─────────────────────┐
+│   Canvas LMS     │  │   ChromaDB     │  │  Local Data Store   │
+│   (remote API)   │  │  data/chroma/  │  │  data/nodes/*.json  │
+│                  │  │                │  │  data/graph.json    │
+└──────────────────┘  └────────────────┘  │  data/findings.db   │
+                                          └──────────┬──────────┘
+                                                     │ reads
+                                          ┌──────────▼──────────┐
+                                          │   FastAPI Backend    │
+                                          │   localhost:8000     │
+                                          │   REST + SSE         │
+                                          └──────────┬──────────┘
+                                                     │
+                                          ┌──────────▼──────────┐
+                                          │   Next.js 15        │
+                                          │   localhost:3000     │
+                                          │   Dashboard UI       │
+                                          └─────────────────────┘
+```
+
+### Data Flow
+
+```
+1. INGEST:   Canvas MCP ──→ Claude Code ──→ Audit MCP ──→ data/nodes/*.json
+2. EMBED:    data/nodes/ ──→ Claude Code ──→ Chroma MCP ──→ data/chroma/
+3. GRAPH:    nodes + Chroma MCP ──→ Claude Code ──→ Audit MCP ──→ data/graph.json
+4. AUDIT:    Audit MCP + Chroma MCP ──→ Claude Code ──→ emit_finding ──→ findings.db
+5. DISPLAY:  data/* ──→ FastAPI (REST+SSE) ──→ Next.js ──→ User
+6. RE-AUDIT: User fixes content ──→ re-triggers audit ──→ findings update ──→ node goes green
+```
+
+---
+
+## Directory Structure
 
 ```
 course-audit/
-│
-├── CLAUDE.md                          ← Orchestrator instructions (read by `claude` on every run)
-├── ARCHITECTURE.md                    ← This file (symlinked or copied here)
+├── APP.md                           # Vision & problem statement
+├── ARCHITECTURE.md                  # This file
+├── PLAN.md                          # Implementation plan (phases/streams)
+├── README.md                        # Project overview & quick start
+├── CLAUDE.md                        # Orchestrator instructions for Claude Code
+├── Makefile                         # Common dev commands
+├── pyproject.toml                   # Python deps (managed by uv)
+├── .env.example                     # Environment variable template
 │
 ├── .claude/
+│   ├── settings.json                # MCP server configuration
 │   └── commands/
-│       ├── audit.md                   ← /audit <assignment_id>
-│       ├── audit-all.md               ← /audit-all (parallel, all nodes)
-│       ├── ingest-canvas.md           ← /ingest-canvas <zip_path>
-│       ├── ingest-file.md             ← /ingest-file <file_path> <type>
-│       ├── rebuild-graph.md           ← /rebuild-graph (re-derive all edges)
-│       └── summarize-findings.md      ← /summarize-findings (course-level report)
+│       ├── audit.md                 # /audit <assignment_id> <run_id>
+│       ├── audit-all.md             # /audit-all
+│       ├── ingest-course.md         # /ingest-course <course_id>
+│       ├── embed-all.md             # /embed-all
+│       ├── rebuild-graph.md         # /rebuild-graph
+│       └── summarize-findings.md    # /summarize-findings
 │
 ├── backend/
-│   ├── main.py                        ← FastAPI app entry point
-│   ├── config.py                      ← Settings (Pydantic BaseSettings, .env)
+│   ├── __init__.py
+│   ├── main.py                      # FastAPI app entry + lifespan
+│   ├── config.py                    # Pydantic BaseSettings (.env)
+│   ├── db.py                        # aiosqlite setup + migrations
 │   ├── models/
 │   │   ├── __init__.py
-│   │   ├── node.py                    ← CourseNode, NodeType, NodeStatus
-│   │   ├── finding.py                 ← Finding, FindingSeverity, FindingType
-│   │   ├── audit.py                   ← AuditRun, AuditStatus
-│   │   └── graph.py                   ← GraphEdge, EdgeType, GraphState
+│   │   ├── node.py                  # CourseNode, NodeType, NodeStatus
+│   │   ├── finding.py               # Finding, FindingSeverity, FindingType
+│   │   ├── audit.py                 # AuditRun, AuditStatus
+│   │   └── graph.py                 # GraphEdge, EdgeType, GraphState
 │   ├── routers/
 │   │   ├── __init__.py
-│   │   ├── nodes.py                   ← GET /nodes, GET /nodes/{id}
-│   │   ├── audit.py                   ← POST /audit/{id}, GET /audit/{id}/stream
-│   │   ├── graph.py                   ← GET /graph, POST /graph/rebuild
-│   │   ├── findings.py                ← GET /findings, GET /findings/{node_id}
-│   │   └── ingest.py                  ← POST /ingest/zip, POST /ingest/file, GET /ingest/status
-│   ├── services/
-│   │   ├── __init__.py
-│   │   ├── claude_runner.py           ← Spawns Claude Code subprocess, tails stream-json
-│   │   ├── chroma_service.py          ← ChromaDB client, upsert, query_similar
-│   │   ├── graph_service.py           ← NetworkX graph, edge derivation, serialization
-│   │   ├── node_service.py            ← CRUD for nodes/ JSON files
-│   │   ├── finding_service.py         ← SQLite findings CRUD via aiosqlite
-│   │   └── ingest/
-│   │       ├── __init__.py
-│   │       ├── canvas_zip.py          ← Parses IMSCC/flat Canvas export ZIP
-│   │       ├── pdf_extractor.py       ← pypdf text extraction
-│   │       ├── docx_extractor.py      ← python-docx extraction
-│   │       ├── html_extractor.py      ← BeautifulSoup Canvas HTML pages
-│   │       └── file_linker.py         ← Matches agent-found filenames → extracted files
-│   └── db.py                          ← aiosqlite setup, migrations
+│   │   ├── nodes.py                 # /api/nodes CRUD
+│   │   ├── audit.py                 # /api/audit + SSE stream
+│   │   ├── graph.py                 # /api/graph
+│   │   ├── findings.py              # /api/findings
+│   │   └── ingest.py                # /api/ingest
+│   └── services/
+│       ├── __init__.py
+│       ├── claude_runner.py         # Spawns Claude Code subprocess
+│       ├── node_service.py          # Node CRUD on data/nodes/
+│       ├── finding_service.py       # SQLite findings CRUD
+│       ├── graph_service.py         # NetworkX read operations for API
+│       └── ingest/
+│           ├── __init__.py
+│           ├── canvas_zip.py        # IMSCC ZIP parser (fallback)
+│           ├── pdf_extractor.py     # pypdf text extraction
+│           ├── docx_extractor.py    # python-docx extraction
+│           └── html_extractor.py    # BeautifulSoup Canvas HTML
 │
 ├── mcp/
-│   ├── fs_mcp.py                      ← read_node, write_node, list_nodes
-│   ├── chromadb_mcp.py                ← upsert_embedding, query_similar, delete_node
-│   ├── graph_mcp.py                   ← add_node, add_edge, get_neighbors, get_flags
-│   └── emit_mcp.py                    ← emit_finding (writes to SQLite + signals SSE)
+│   └── audit_mcp.py                 # Single composite FastMCP server
+│                                    # Mounts: nodes, graph, emit namespaces
 │
 ├── data/
-│   ├── nodes/                         ← One JSON file per course node (source of truth)
+│   ├── nodes/                       # One JSON per course node (source of truth)
 │   │   └── .gitkeep
-│   ├── graph.json                     ← Derived graph (never hand-edit)
-│   ├── chroma/                        ← ChromaDB persistent storage
+│   ├── chroma/                      # ChromaDB persistent storage
 │   │   └── .gitkeep
-│   └── findings.db                    ← SQLite: findings, audit runs
+│   ├── graph.json                   # Derived dependency graph (never hand-edit)
+│   └── findings.db                  # SQLite: findings, audit runs, ingest log
 │
-├── frontend/                          ← Next.js 14 app
+├── frontend/
 │   ├── app/
-│   │   ├── layout.tsx
-│   │   ├── page.tsx                   ← / Dashboard overview
+│   │   ├── layout.tsx               # Root layout with sidebar + top bar
+│   │   ├── page.tsx                 # / — Dashboard overview
 │   │   ├── assignments/
-│   │   │   ├── page.tsx               ← /assignments List view
+│   │   │   ├── page.tsx             # /assignments — Filterable list
 │   │   │   └── [id]/
-│   │   │       └── page.tsx           ← /assignments/[id] Detail + recommendations
+│   │   │       └── page.tsx         # /assignments/[id] — Detail + audit
 │   │   ├── graph/
-│   │   │   └── page.tsx               ← /graph Force-directed dependency graph
+│   │   │   └── page.tsx             # /graph — Force-directed visualization
 │   │   ├── audit/
-│   │   │   ├── page.tsx               ← /audit Run controls, history
+│   │   │   ├── page.tsx             # /audit — Controls + history
 │   │   │   └── [runId]/
-│   │   │       └── page.tsx           ← /audit/[runId] Live stream view
+│   │   │       └── page.tsx         # /audit/[runId] — Live stream
 │   │   └── ingest/
-│   │       └── page.tsx               ← /ingest Bulk ingestion status + controls
+│   │       └── page.tsx             # /ingest — Status + controls
 │   ├── components/
-│   │   ├── ui/                        ← shadcn/ui base components
-│   │   ├── layout/
-│   │   │   ├── Sidebar.tsx
-│   │   │   └── TopBar.tsx
-│   │   ├── assignments/
-│   │   │   ├── AssignmentCard.tsx
-│   │   │   ├── AssignmentList.tsx
-│   │   │   ├── FindingCard.tsx
-│   │   │   └── FindingPanel.tsx
-│   │   ├── graph/
-│   │   │   ├── DependencyGraph.tsx    ← D3 force layout wrapper
-│   │   │   ├── GraphNode.tsx
-│   │   │   └── GraphEdge.tsx
-│   │   ├── audit/
-│   │   │   ├── AuditButton.tsx
-│   │   │   ├── AuditStream.tsx        ← SSE consumer, live finding cards
-│   │   │   └── AuditHistory.tsx
-│   │   └── ingest/
-│   │       ├── IngestProgress.tsx
-│   │       └── IngestLog.tsx
+│   │   ├── ui/                      # shadcn/ui primitives
+│   │   ├── layout/                  # Sidebar.tsx, TopBar.tsx
+│   │   ├── assignments/             # AssignmentCard, FindingCard, FindingPanel
+│   │   ├── graph/                   # DependencyGraph (D3), GraphNode, GraphEdge
+│   │   ├── audit/                   # AuditStream (SSE), AuditHistory
+│   │   └── ingest/                  # IngestProgress, IngestLog
 │   ├── lib/
-│   │   ├── api.ts                     ← Typed API client (axios)
-│   │   ├── sse.ts                     ← SSE hook (useAuditStream)
-│   │   └── types.ts                   ← Shared TypeScript types (mirrors Pydantic models)
+│   │   ├── api.ts                   # Typed fetch wrapper
+│   │   ├── sse.ts                   # useAuditStream hook (EventSource)
+│   │   └── types.ts                 # TypeScript types (mirrors Pydantic)
 │   ├── store/
-│   │   └── useAuditStore.ts           ← Zustand store
+│   │   └── useAuditStore.ts         # Zustand store
 │   ├── next.config.ts
 │   ├── tailwind.config.ts
 │   └── package.json
 │
-├── scripts/
-│   ├── seed_demo.py                   ← Seeds data/ with fake assignments for dev
-│   ├── setup_db.py                    ← Creates SQLite schema
-│   └── check_deps.py                  ← Verifies Claude Code CLI, MCP servers, ChromaDB
+├── tests/
+│   ├── backend/
+│   │   ├── test_models.py           # Pydantic model validation
+│   │   ├── test_services.py         # Service layer logic
+│   │   └── test_routers.py          # API route integration
+│   ├── mcp/
+│   │   └── test_audit_mcp.py        # MCP tool contracts
+│   └── e2e/
+│       └── audit_flow.spec.ts       # Playwright full-flow tests
 │
-├── .env.example
-├── pyproject.toml                     ← Python deps (uv or pip)
-└── README.md
+├── scripts/
+│   ├── setup.sh                     # Full setup automation
+│   ├── seed_demo.py                 # Demo data seeder (15 assignments, edges, findings)
+│   ├── setup_db.py                  # SQLite schema creator
+│   └── check_deps.py               # Dependency verification
+│
+└── .github/
+    └── workflows/
+        └── ci.yml                   # Lint + test on push
 ```
 
 ---
 
-## Data Models
+## MCP Server Strategy
 
-### Python (Pydantic v2 — strict mode throughout)
+Three MCP servers. Two are off-the-shelf. One is custom.
 
-```python
-# backend/models/node.py
-from __future__ import annotations
-from enum import StrEnum
-from typing import Annotated
-from pydantic import BaseModel, Field
-from datetime import datetime
+### 1. Canvas MCP (Pre-existing — External)
 
-class NodeType(StrEnum):
-    ASSIGNMENT = "assignment"
-    PAGE = "page"
-    RUBRIC = "rubric"
-    LECTURE = "lecture"
-    ANNOUNCEMENT = "announcement"
-    FILE = "file"
+Trevor's existing Canvas MCP provides direct access to Canvas LMS via API:
 
-class NodeStatus(StrEnum):
-    OK = "ok"
-    WARN = "warn"
-    GAP = "gap"
-    ORPHAN = "orphan"
-    UNAUDITED = "unaudited"
+- **Courses**: list, get details, settings
+- **Modules**: structure, ordering, items within each module
+- **Assignments**: full text, rubrics, due dates, submission types
+- **Rubrics**: criteria, point values, descriptions per level
+- **Pages**: wiki/content pages with HTML body
+- **Announcements**: all announcements (critical for finding "patches" to broken instructions)
+- **Files**: course file listings and metadata
 
-class CourseNode(BaseModel):
-    model_config = {"strict": True}
+**Setup**: Configured in `.claude/settings.json` per Canvas MCP docs. Requires `CANVAS_API_TOKEN` and `CANVAS_BASE_URL`.
 
-    id: str
-    type: NodeType
-    title: str
-    week: int | None = None
-    module: str | None = None
-    module_order: int | None = None
+### 2. Chroma MCP (Official — `chroma-mcp`)
 
-    # Content
-    description: str | None = None          # Inline Canvas HTML stripped to text
-    instructions: str | None = None         # Full instruction text
-    rubric_text: str | None = None
-    linked_files: list[str] = Field(default_factory=list)   # filenames
-    linked_pages: list[str] = Field(default_factory=list)   # page IDs
-    linked_assignments: list[str] = Field(default_factory=list)
+The [official Chroma MCP server](https://github.com/chroma-core/chroma-mcp) from the ChromaDB team. Provides all vector DB operations needed for RAG:
 
-    # Extracted from file dump
-    file_content: str | None = None         # Full extracted text from PDF/DOCX
-    file_path: str | None = None            # Path in data/nodes/files/
+- Collection management (create, list, delete)
+- Document operations (add, update, query, delete)
+- Semantic search with metadata filtering (filter by week, type)
+- Built-in embedding functions
 
-    # Audit state
-    status: NodeStatus = NodeStatus.UNAUDITED
-    last_audited: datetime | None = None
-    finding_count: int = 0
+**Install**: `pip install chroma-mcp` or use `uvx chroma-mcp`
 
-    # Source tracking
-    canvas_url: str | None = None
-    source: str = "unknown"   # "agent" | "file_dump" | "merged"
-    extracted_at: datetime = Field(default_factory=datetime.utcnow)
-```
-
-```python
-# backend/models/finding.py
-from __future__ import annotations
-from enum import StrEnum
-from pydantic import BaseModel, Field
-from datetime import datetime
-import uuid
-
-class FindingSeverity(StrEnum):
-    GAP = "gap"
-    WARN = "warn"
-    INFO = "info"
-    OK = "ok"
-
-class FindingType(StrEnum):
-    CLARITY = "clarity"
-    RUBRIC_MISMATCH = "rubric_mismatch"
-    ASSUMPTION_GAP = "assumption_gap"
-    DEPENDENCY_GAP = "dependency_gap"
-    FORMAT_MISMATCH = "format_mismatch"
-    ORPHAN = "orphan"
-    CASCADE_RISK = "cascade_risk"
-    CURRICULUM_GAP = "curriculum_gap"
-
-class Finding(BaseModel):
-    model_config = {"strict": True}
-
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    assignment_id: str
-    audit_run_id: str
-    severity: FindingSeverity
-    finding_type: FindingType
-    title: str
-    body: str
-    linked_node: str | None = None
-    evidence: str | None = None       # Quoted text from the assignment that triggered this
-    pass_number: int                   # 1=clarity, 2=dependencies, 3=forward_impact
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-```
-
-```python
-# backend/models/graph.py
-from __future__ import annotations
-from enum import StrEnum
-from pydantic import BaseModel, Field
-from datetime import datetime
-
-class EdgeType(StrEnum):
-    EXPLICIT = "explicit"        # Assignment literally references prior
-    INFERRED = "inferred"        # RAG similarity + reasoning conclusion
-    GAP = "gap"                  # Should exist but doesn't / format mismatch
-    ARTIFACT = "artifact"        # Produces file consumed downstream
-
-class GraphEdge(BaseModel):
-    model_config = {"strict": True}
-
-    source: str
-    target: str
-    edge_type: EdgeType
-    label: str
-    evidence: str | None = None
-    confidence: float | None = None   # 0.0–1.0 for inferred edges
-    derived_at: datetime = Field(default_factory=datetime.utcnow)
-
-class GraphState(BaseModel):
-    nodes: list[str]
-    edges: list[GraphEdge]
-    flags: list[str]   # node IDs with active gap/orphan status
-    last_rebuilt: datetime = Field(default_factory=datetime.utcnow)
-```
-
-### TypeScript (frontend/lib/types.ts)
-
-```typescript
-// Mirror of Pydantic models — keep in sync manually or generate with openapi-typescript
-
-export type NodeType =
-  | "assignment"
-  | "page"
-  | "rubric"
-  | "lecture"
-  | "announcement"
-  | "file";
-export type NodeStatus = "ok" | "warn" | "gap" | "orphan" | "unaudited";
-export type FindingSeverity = "gap" | "warn" | "info" | "ok";
-export type FindingType =
-  | "clarity"
-  | "rubric_mismatch"
-  | "assumption_gap"
-  | "dependency_gap"
-  | "format_mismatch"
-  | "orphan"
-  | "cascade_risk"
-  | "curriculum_gap";
-export type EdgeType = "explicit" | "inferred" | "gap" | "artifact";
-
-export interface CourseNode {
-  id: string;
-  type: NodeType;
-  title: string;
-  week: number | null;
-  module: string | null;
-  description: string | null;
-  instructions: string | null;
-  rubric_text: string | null;
-  linked_files: string[];
-  linked_pages: string[];
-  linked_assignments: string[];
-  status: NodeStatus;
-  last_audited: string | null;
-  finding_count: number;
-  canvas_url: string | null;
-}
-
-export interface Finding {
-  id: string;
-  assignment_id: string;
-  audit_run_id: string;
-  severity: FindingSeverity;
-  finding_type: FindingType;
-  title: string;
-  body: string;
-  linked_node: string | null;
-  evidence: string | null;
-  pass_number: number;
-  created_at: string;
-}
-
-export interface GraphEdge {
-  source: string;
-  target: string;
-  edge_type: EdgeType;
-  label: string;
-  evidence: string | null;
-  confidence: number | null;
-}
-
-export interface GraphState {
-  nodes: string[];
-  edges: GraphEdge[];
-  flags: string[];
-  last_rebuilt: string;
-}
-
-// SSE event types
-export type AuditStreamEvent =
-  | { type: "finding"; data: Finding }
-  | { type: "pass_start"; pass: number; label: string }
-  | { type: "pass_done"; pass: number; finding_count: number }
-  | { type: "tool_call"; tool: string; input: Record<string, unknown> }
-  | { type: "done"; total_findings: number }
-  | { type: "error"; message: string };
-```
-
-### SQLite Schema
-
-```sql
--- Run via scripts/setup_db.py
-
-CREATE TABLE IF NOT EXISTS audit_runs (
-    id TEXT PRIMARY KEY,
-    assignment_id TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'running',   -- running | done | error
-    pass1_findings INTEGER DEFAULT 0,
-    pass2_findings INTEGER DEFAULT 0,
-    pass3_findings INTEGER DEFAULT 0,
-    total_findings INTEGER DEFAULT 0,
-    started_at TEXT NOT NULL,
-    finished_at TEXT,
-    error_message TEXT
-);
-
-CREATE TABLE IF NOT EXISTS findings (
-    id TEXT PRIMARY KEY,
-    assignment_id TEXT NOT NULL,
-    audit_run_id TEXT NOT NULL,
-    severity TEXT NOT NULL,
-    finding_type TEXT NOT NULL,
-    title TEXT NOT NULL,
-    body TEXT NOT NULL,
-    linked_node TEXT,
-    evidence TEXT,
-    pass_number INTEGER NOT NULL,
-    created_at TEXT NOT NULL,
-    FOREIGN KEY (audit_run_id) REFERENCES audit_runs(id)
-);
-
-CREATE TABLE IF NOT EXISTS ingest_log (
-    id TEXT PRIMARY KEY,
-    file_name TEXT NOT NULL,
-    file_type TEXT NOT NULL,
-    node_id TEXT,
-    status TEXT NOT NULL,   -- success | error | skipped
-    error_message TEXT,
-    ingested_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_findings_assignment ON findings(assignment_id);
-CREATE INDEX IF NOT EXISTS idx_findings_severity ON findings(severity);
-CREATE INDEX IF NOT EXISTS idx_audit_runs_assignment ON audit_runs(assignment_id);
-```
-
----
-
-## Phase 1: Canvas Bulk Ingestion Pipeline
-
-This phase runs BEFORE any audits. It populates `data/nodes/` with all course content.
-
-### Two-track parallel approach
-
-```
-Track A: File dump extraction (runs first, fast)
-  Canvas export ZIP → unzip → parse IMSCC manifest → extract all files
-  → pypdf/python-docx/html for text → write to data/nodes/
-
-Track B: Agent browser navigation (runs alongside or after)
-  Claude Code with canvas-mcp → walk every module → extract inline content
-  → capture relational context (module order, page links, assignment links)
-  → merge with Track A output (join on filename)
-```
-
-### 1A: Canvas ZIP Parser (`backend/services/ingest/canvas_zip.py`)
-
-```python
-import asyncio
-import zipfile
-import xml.etree.ElementTree as ET
-from pathlib import Path
-from typing import AsyncIterator
-from ..node_service import NodeService
-from .pdf_extractor import extract_pdf
-from .docx_extractor import extract_docx
-from .html_extractor import extract_canvas_html
-
-async def ingest_canvas_zip(
-    zip_path: Path,
-    node_service: NodeService,
-    progress_callback: AsyncIterator[str] | None = None
-) -> dict[str, int]:
-    """
-    Ingests a Canvas IMSCC export ZIP.
-    Returns stats: {total, success, error, skipped}
-
-    IMSCC structure:
-    - imsmanifest.xml  ← master index, all resource IDs + types
-    - course_settings/ ← module order, assignment groups
-    - wiki_content/    ← HTML pages (Canvas pages)
-    - web_resources/   ← attached files (PDFs, DOCX, etc.)
-    - assignment_groups/ ← assignment XMLs with rubrics
-    """
-    stats = {"total": 0, "success": 0, "error": 0, "skipped": 0}
-
-    with zipfile.ZipFile(zip_path) as zf:
-        # Parse manifest
-        manifest = ET.fromstring(zf.read("imsmanifest.xml"))
-        ns = {"imscc": "http://www.imsglobal.org/xsd/imsccv1p1/imscp_v1p1"}
-
-        # Parse module order from course_settings/module_meta.xml
-        module_order = await _parse_module_meta(zf, ns)
-
-        # Walk all resources in manifest
-        tasks = []
-        for resource in manifest.findall(".//imscc:resource", ns):
-            res_type = resource.get("type", "")
-            res_id = resource.get("identifier", "")
-            href = resource.get("href", "")
-
-            if "assignment" in res_type:
-                tasks.append(_ingest_assignment(zf, resource, module_order, node_service))
-            elif "webcontent" in res_type or "wiki" in res_type:
-                tasks.append(_ingest_page(zf, resource, module_order, node_service))
-            elif href.endswith(".pdf"):
-                tasks.append(_ingest_pdf(zf, href, res_id, node_service))
-            elif href.endswith((".docx", ".doc")):
-                tasks.append(_ingest_docx(zf, href, res_id, node_service))
-
-        # Run all ingestion concurrently, max 10 at once
-        semaphore = asyncio.Semaphore(10)
-        results = await asyncio.gather(*[
-            _with_semaphore(semaphore, task) for task in tasks
-        ], return_exceptions=True)
-
-        for result in results:
-            stats["total"] += 1
-            if isinstance(result, Exception):
-                stats["error"] += 1
-            else:
-                stats["success"] += 1
-
-    return stats
-```
-
-**Key extraction functions:**
-
-```python
-async def _ingest_assignment(zf, resource, module_order, node_service):
-    """Parse Canvas assignment XML → CourseNode."""
-    # Canvas assignment XML contains: title, body (instructions), rubric, due date
-    # Extract rubric criteria separately
-    ...
-
-async def _ingest_page(zf, resource, module_order, node_service):
-    """Parse Canvas wiki HTML page → CourseNode."""
-    # Strip Canvas-specific markup, extract links to files and other pages
-    ...
-
-async def _ingest_pdf(zf, href, res_id, node_service):
-    """Extract text from PDF file in ZIP."""
-    # pypdf: extract all pages, join with double newline
-    # Store in node.file_content, node.file_path
-    ...
-```
-
-### 1B: Slash Command for Agent-Assisted Ingestion
-
-The agent walk happens via Claude Code. This handles:
-
-- Pages that only exist as Canvas HTML (no file equivalent)
-- Relational context (module membership, ordering, page-to-assignment links)
-- Announcement text
-
-```markdown
-<!-- .claude/commands/ingest-canvas.md -->
-
-Ingest the Canvas course at $ARGUMENTS.
-
-You have tools: canvas_navigate, canvas_extract_page, canvas_list_module_items,
-fs_write_node, fs_read_node.
-
-## Step 1 — Module walk (parallel)
-
-List all modules with canvas_list_module_items for each module ID.
-For each item, record: title, URL, type, module_name, module_order, item_order.
-
-## Step 2 — Page extraction (parallel, batches of 8)
-
-For each page URL found in Step 1:
-
-- canvas_extract_page → get title, full HTML text, all hrefs
-- Strip HTML to plain text
-- Note all linked filenames and linked assignment IDs
-- fs_write_node with type="page", source="agent"
-
-## Step 3 — Assignment extraction (parallel, batches of 8)
-
-For each assignment URL:
-
-- canvas_extract_page → description, instructions, due date
-- Note rubric link if present; extract rubric criteria text
-- Note linked files (handouts, templates)
-- Check if existing node exists (from ZIP ingest) and MERGE, don't overwrite
-  - Merge: add relational fields (module, order, links) to existing node
-  - Do not overwrite file_content already extracted from ZIP
-
-## Step 4 — Announcement extraction
-
-Extract all announcements in chronological order.
-These often contain corrections to broken instructions — flag any that
-reference an assignment by name.
-
-## Step 5 — File linking
-
-For every node with linked_files, check if a matching node exists in nodes/.
-If yes, add cross-reference. If no match → flag as "broken file link".
-
-Report final counts: pages, assignments, announcements, broken links.
-```
-
-### 1C: Embedding Pass (after ingestion)
-
-After nodes are written, embed all content into ChromaDB:
-
-```markdown
-<!-- .claude/commands/embed-all.md -->
-
-Embed all nodes from data/nodes/ into ChromaDB for RAG queries.
-
-For each node in data/nodes/:
-
-1. Build embedding text = title + " | " + (description or "") + " | " + (instructions or "")[:2000]
-2. Call chromadb_upsert with id=node.id, text=embedding_text, metadata={type, week, module, status}
-3. Report: total embedded, errors
-
-Run in batches of 20. Skip nodes where file_content is null AND instructions is null.
-```
-
-### 1D: Graph Derivation Pass
-
-After embedding:
-
-```markdown
-<!-- .claude/commands/rebuild-graph.md -->
-
-Derive the dependency graph for all course nodes.
-
-You have tools: fs_list_nodes, fs_read_node, chromadb_query_similar, graph_add_node,
-graph_add_edge, graph_get_neighbors.
-
-For each assignment node (type="assignment"), ordered by week ascending:
-
-1. Add to graph with graph_add_node
-2. Check node.linked_assignments → add EXPLICIT edges for each
-3. Check node.linked_pages → add EXPLICIT edges for each page
-4. Call chromadb_query_similar with assignment description, filter week < this.week
-   - For each result above 0.7 similarity: reason about whether this actually
-     depends on it. If yes → add INFERRED edge with confidence score
-5. Check if this assignment has NO incoming edges at all → flag as ORPHAN
-
-After all nodes processed:
-
-- Find pairs (A → B) where A produces an artifact and B expects one
-  but descriptions suggest incompatible formats → add GAP edge
-- Write final graph to graph.json via graph_serialize
-
-Report: node_count, edge_count, orphan_count, gap_count.
-```
-
----
-
-## Phase 2: MCP Servers
-
-All four MCP servers run as persistent local processes. Claude Code connects to them
-via the `.claude/settings.json` MCP configuration.
-
-### MCP Configuration (`.claude/settings.json`)
-
+**Config** (`.claude/settings.json`):
 ```json
 {
-  "mcpServers": {
-    "fs": {
-      "command": "python",
-      "args": ["mcp/fs_mcp.py"],
-      "env": { "NODES_DIR": "./data/nodes" }
-    },
-    "chromadb": {
-      "command": "python",
-      "args": ["mcp/chromadb_mcp.py"],
-      "env": { "CHROMA_DIR": "./data/chroma" }
-    },
-    "graph": {
-      "command": "python",
-      "args": ["mcp/graph_mcp.py"],
-      "env": { "GRAPH_PATH": "./data/graph.json" }
-    },
-    "emit": {
-      "command": "python",
-      "args": ["mcp/emit_mcp.py"],
-      "env": {
-        "DB_PATH": "./data/findings.db",
-        "EMIT_SOCKET": "/tmp/audit_emit.sock"
-      }
+  "chroma": {
+    "command": "uvx",
+    "args": ["chroma-mcp", "--client-type", "persistent", "--data-dir", "./data/chroma"]
+  }
+}
+```
+
+### 3. Audit MCP (Custom — Single Composite FastMCP Server)
+
+One FastMCP server at `mcp/audit_mcp.py` using FastMCP's `mount()` to compose three namespaces into a single process:
+
+**`nodes_` namespace** — Course node CRUD:
+
+| Tool | Purpose |
+|------|---------|
+| `nodes_read(node_id)` | Read a course node JSON by ID |
+| `nodes_write(node_id, data)` | Write or merge a node (preserves existing fields on merge) |
+| `nodes_list(type?, week?)` | List node IDs with optional filters |
+| `nodes_read_many(ids)` | Batch read multiple nodes |
+
+**`graph_` namespace** — Dependency graph operations:
+
+| Tool | Purpose |
+|------|---------|
+| `graph_add_node(id, attrs)` | Add node to NetworkX graph |
+| `graph_add_edge(source, target, type, label, ...)` | Add directed edge with metadata |
+| `graph_get_neighbors(id)` | Get upstream (predecessors) + downstream (successors) |
+| `graph_get_flags()` | All nodes with gap/orphan status |
+| `graph_serialize()` | Persist full graph to `data/graph.json` |
+
+**`emit_` namespace** — Audit finding emission:
+
+| Tool | Purpose |
+|------|---------|
+| `emit_finding(assignment_id, audit_run_id, severity, finding_type, title, body, pass_number, ...)` | Write finding to SQLite immediately. Dashboard polls this. |
+
+**Config** (`.claude/settings.json`):
+```json
+{
+  "audit": {
+    "command": "python",
+    "args": ["mcp/audit_mcp.py"],
+    "env": {
+      "NODES_DIR": "./data/nodes",
+      "GRAPH_PATH": "./data/graph.json",
+      "DB_PATH": "./data/findings.db"
     }
   }
 }
 ```
 
-### `mcp/fs_mcp.py`
-
-```python
-import os, json
-from pathlib import Path
-import fastmcp
-
-NODES_DIR = Path(os.environ["NODES_DIR"])
-mcp = fastmcp.FastMCP("fs")
-
-@mcp.tool()
-def read_node(node_id: str) -> dict:
-    """Read a course node by ID. Returns full node JSON."""
-    path = NODES_DIR / f"{node_id}.json"
-    if not path.exists():
-        raise FileNotFoundError(f"Node {node_id} not found")
-    return json.loads(path.read_text())
-
-@mcp.tool()
-def write_node(node_id: str, data: dict) -> dict:
-    """Write or update a course node. Merges with existing if present."""
-    path = NODES_DIR / f"{node_id}.json"
-    if path.exists():
-        existing = json.loads(path.read_text())
-        existing.update({k: v for k, v in data.items() if v is not None})
-        data = existing
-    data["id"] = node_id
-    path.write_text(json.dumps(data, indent=2, default=str))
-    return {"written": node_id}
-
-@mcp.tool()
-def list_nodes(node_type: str | None = None, week: int | None = None) -> list[str]:
-    """List all node IDs, optionally filtered by type or week."""
-    nodes = []
-    for path in NODES_DIR.glob("*.json"):
-        node = json.loads(path.read_text())
-        if node_type and node.get("type") != node_type:
-            continue
-        if week is not None and node.get("week") != week:
-            continue
-        nodes.append(path.stem)
-    return sorted(nodes)
-
-@mcp.tool()
-def read_many_nodes(node_ids: list[str]) -> list[dict]:
-    """Read multiple nodes at once. Missing IDs are skipped."""
-    return [json.loads((NODES_DIR / f"{nid}.json").read_text())
-            for nid in node_ids
-            if (NODES_DIR / f"{nid}.json").exists()]
-
-if __name__ == "__main__":
-    mcp.run()
-```
-
-### `mcp/chromadb_mcp.py`
-
-```python
-import os
-from pathlib import Path
-import chromadb
-import fastmcp
-
-CHROMA_DIR = Path(os.environ["CHROMA_DIR"])
-client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-collection = client.get_or_create_collection(
-    name="course_nodes",
-    metadata={"hnsw:space": "cosine"}
-)
-mcp = fastmcp.FastMCP("chromadb")
-
-@mcp.tool()
-def upsert_embedding(node_id: str, text: str, metadata: dict) -> dict:
-    """Embed and store a course node. Replaces existing entry if present."""
-    collection.upsert(
-        ids=[node_id],
-        documents=[text],
-        metadatas=[metadata]
-    )
-    return {"upserted": node_id}
-
-@mcp.tool()
-def query_similar(
-    text: str,
-    n_results: int = 5,
-    week_before: int | None = None,
-    node_type: str | None = None
-) -> list[dict]:
-    """
-    Find semantically similar course nodes via RAG.
-
-    - week_before: only return nodes from weeks strictly before this value
-    - node_type: filter by assignment/page/rubric/lecture
-
-    Returns list of {id, score, metadata} sorted by similarity descending.
-    """
-    where: dict = {}
-    if week_before is not None:
-        where["week"] = {"$lt": week_before}
-    if node_type:
-        where["type"] = {"$eq": node_type}
-
-    results = collection.query(
-        query_texts=[text],
-        n_results=n_results,
-        where=where if where else None
-    )
-
-    return [
-        {"id": rid, "score": 1 - dist, "metadata": meta}
-        for rid, dist, meta in zip(
-            results["ids"][0],
-            results["distances"][0],
-            results["metadatas"][0]
-        )
-    ]
-
-@mcp.tool()
-def delete_node(node_id: str) -> dict:
-    """Remove a node from the vector store."""
-    collection.delete(ids=[node_id])
-    return {"deleted": node_id}
-
-if __name__ == "__main__":
-    mcp.run()
-```
-
-### `mcp/graph_mcp.py`
-
-```python
-import os, json
-from pathlib import Path
-from datetime import datetime, timezone
-import networkx as nx
-import fastmcp
-
-GRAPH_PATH = Path(os.environ["GRAPH_PATH"])
-mcp = fastmcp.FastMCP("graph")
-
-def _load_graph() -> nx.DiGraph:
-    if not GRAPH_PATH.exists():
-        return nx.DiGraph()
-    data = json.loads(GRAPH_PATH.read_text())
-    G = nx.DiGraph()
-    for node_id in data.get("nodes", []):
-        G.add_node(node_id)
-    for edge in data.get("edges", []):
-        G.add_edge(edge["source"], edge["target"], **edge)
-    return G
-
-def _save_graph(G: nx.DiGraph) -> None:
-    edges = [dict(G.edges[u, v]) for u, v in G.edges()]
-    data = {
-        "nodes": list(G.nodes()),
-        "edges": edges,
-        "flags": [n for n in G.nodes() if G.nodes[n].get("status") in ("gap", "orphan")],
-        "last_rebuilt": datetime.now(timezone.utc).isoformat()
-    }
-    GRAPH_PATH.write_text(json.dumps(data, indent=2, default=str))
-
-@mcp.tool()
-def add_node(node_id: str, attrs: dict) -> dict:
-    G = _load_graph()
-    G.add_node(node_id, **attrs)
-    _save_graph(G)
-    return {"added": node_id}
-
-@mcp.tool()
-def add_edge(
-    source: str, target: str, edge_type: str,
-    label: str, evidence: str | None = None,
-    confidence: float | None = None
-) -> dict:
-    G = _load_graph()
-    G.add_edge(source, target,
-        source=source, target=target,
-        edge_type=edge_type, label=label,
-        evidence=evidence, confidence=confidence,
-        derived_at=datetime.now(timezone.utc).isoformat()
-    )
-    _save_graph(G)
-    return {"added_edge": f"{source} → {target}"}
-
-@mcp.tool()
-def get_neighbors(node_id: str) -> dict:
-    """Return upstream (predecessors) and downstream (successors) node IDs."""
-    G = _load_graph()
-    if node_id not in G:
-        return {"upstream": [], "downstream": [], "error": "node not found"}
-    return {
-        "upstream": [
-            {"id": n, "edge": dict(G.edges[n, node_id])}
-            for n in G.predecessors(node_id)
-        ],
-        "downstream": [
-            {"id": n, "edge": dict(G.edges[node_id, n])}
-            for n in G.successors(node_id)
-        ]
-    }
-
-@mcp.tool()
-def get_flags() -> list[dict]:
-    """Return all flagged nodes (gap/orphan) with their edge context."""
-    G = _load_graph()
-    flags = []
-    for n in G.nodes():
-        status = G.nodes[n].get("status")
-        if status in ("gap", "orphan"):
-            flags.append({"id": n, "status": status, **G.nodes[n]})
-    return flags
-
-@mcp.tool()
-def serialize_graph() -> dict:
-    """Return full graph as dict for writing to graph.json."""
-    G = _load_graph()
-    _save_graph(G)
-    return {"nodes": len(G.nodes()), "edges": len(G.edges())}
-
-if __name__ == "__main__":
-    mcp.run()
-```
-
-### `mcp/emit_mcp.py`
-
-The most important MCP tool. When Claude calls `emit_finding`, it:
-
-1. Writes the finding to SQLite
-2. Writes a signal to a Unix socket that the FastAPI SSE handler is listening on
-3. Returns immediately so Claude can keep reasoning
-
-```python
-import os, json, sqlite3, socket
-from pathlib import Path
-from datetime import datetime, timezone
-import uuid
-import fastmcp
-
-DB_PATH = Path(os.environ["DB_PATH"])
-EMIT_SOCKET = os.environ["EMIT_SOCKET"]   # /tmp/audit_emit.sock
-mcp = fastmcp.FastMCP("emit")
-
-def _write_to_db(finding: dict) -> None:
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("""
-        INSERT INTO findings
-        (id, assignment_id, audit_run_id, severity, finding_type,
-         title, body, linked_node, evidence, pass_number, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?)
-    """, [
-        finding["id"], finding["assignment_id"], finding["audit_run_id"],
-        finding["severity"], finding["finding_type"],
-        finding["title"], finding["body"],
-        finding.get("linked_node"), finding.get("evidence"),
-        finding["pass_number"], finding["created_at"]
-    ])
-    conn.commit()
-    conn.close()
-
-def _signal_sse(finding: dict) -> None:
-    """Push finding to FastAPI SSE handler via Unix socket."""
-    try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-            s.connect(EMIT_SOCKET)
-            s.sendall(json.dumps(finding).encode() + b"\n")
-    except Exception:
-        pass   # SSE handler may not be listening; finding is already in DB
-
-@mcp.tool()
-def emit_finding(
-    assignment_id: str,
-    audit_run_id: str,
-    severity: str,
-    finding_type: str,
-    title: str,
-    body: str,
-    pass_number: int,
-    linked_node: str | None = None,
-    evidence: str | None = None
-) -> dict:
-    """
-    Record an audit finding immediately when discovered.
-
-    Call this as soon as you identify an issue — do not batch findings
-    until the end of a pass. The dashboard streams them live.
-
-    severity: "gap" | "warn" | "info"
-    finding_type: "clarity" | "rubric_mismatch" | "assumption_gap" |
-                  "dependency_gap" | "format_mismatch" | "orphan" |
-                  "cascade_risk" | "curriculum_gap"
-    evidence: Quote the exact text from the assignment that triggered this finding.
-    pass_number: 1 (clarity) | 2 (dependencies) | 3 (forward_impact)
-    """
-    finding = {
-        "id": str(uuid.uuid4()),
-        "assignment_id": assignment_id,
-        "audit_run_id": audit_run_id,
-        "severity": severity,
-        "finding_type": finding_type,
-        "title": title,
-        "body": body,
-        "linked_node": linked_node,
-        "evidence": evidence,
-        "pass_number": pass_number,
-        "created_at": datetime.now(timezone.utc).isoformat()
-    }
-    _write_to_db(finding)
-    _signal_sse(finding)
-    return {"emitted": True, "finding_id": finding["id"]}
-
-if __name__ == "__main__":
-    mcp.run()
-```
+**Why one composite server instead of three separate processes:**
+FastMCP's `mount()` combines multiple tool namespaces into a single stdio process. This means one process to manage instead of three, automatic namespacing prevents tool name collisions, and startup is faster.
 
 ---
 
-## Phase 3: FastAPI Backend
+## Data Models
 
-### `backend/main.py`
+All Python models use **Pydantic v2 strict mode** (`model_config = {"strict": True}`). TypeScript types in `frontend/lib/types.ts` mirror them exactly — keep in sync manually or generate via `openapi-typescript`.
 
-```python
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
-from .db import init_db
-from .routers import nodes, audit, graph, findings, ingest
+### CourseNode (`backend/models/node.py`)
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    await init_db()
-    yield
+Core entity. One JSON file per node in `data/nodes/{id}.json`.
 
-app = FastAPI(title="Course Audit API", lifespan=lifespan)
+| Field | Type | Purpose |
+|-------|------|---------|
+| `id` | `str` | Unique identifier |
+| `type` | `NodeType` | assignment, page, rubric, lecture, announcement, file |
+| `title` | `str` | Display name |
+| `week` | `int?` | Course week number |
+| `module` | `str?` | Canvas module name |
+| `module_order` | `int?` | Position within module |
+| `description` | `str?` | Inline Canvas HTML stripped to text |
+| `instructions` | `str?` | Full instruction text |
+| `rubric_text` | `str?` | Rubric criteria as text |
+| `linked_files` | `list[str]` | Referenced filenames |
+| `linked_pages` | `list[str]` | Referenced page IDs |
+| `linked_assignments` | `list[str]` | Referenced assignment IDs |
+| `file_content` | `str?` | Extracted text from PDF/DOCX |
+| `file_path` | `str?` | Path in data/nodes/files/ |
+| `status` | `NodeStatus` | ok, warn, gap, orphan, unaudited |
+| `last_audited` | `datetime?` | Timestamp of last audit |
+| `finding_count` | `int` | Total findings for this node |
+| `canvas_url` | `str?` | Link back to Canvas |
+| `source` | `str` | "canvas_mcp", "file_dump", "merged" |
+| `extracted_at` | `datetime` | When this node was created |
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
-    allow_methods=["*"],
-    allow_headers=["*"]
-)
+### Finding (`backend/models/finding.py`)
 
-app.include_router(nodes.router, prefix="/api/nodes")
-app.include_router(audit.router, prefix="/api/audit")
-app.include_router(graph.router, prefix="/api/graph")
-app.include_router(findings.router, prefix="/api/findings")
-app.include_router(ingest.router, prefix="/api/ingest")
-```
+Audit output. Stored in SQLite `findings` table.
 
-### `backend/routers/audit.py` — The SSE + Claude Code Runner
+| Field | Type | Purpose |
+|-------|------|---------|
+| `id` | `str` | UUID |
+| `assignment_id` | `str` | Which node this finding is about |
+| `audit_run_id` | `str` | Which audit run produced this |
+| `severity` | `FindingSeverity` | gap, warn, info, ok |
+| `finding_type` | `FindingType` | See taxonomy below |
+| `title` | `str` | Short finding headline |
+| `body` | `str` | Full explanation |
+| `linked_node` | `str?` | Related node ID (if cross-reference) |
+| `evidence` | `str?` | Quoted text that triggered this |
+| `pass_number` | `int` | 1=clarity, 2=dependencies, 3=forward_impact |
+| `created_at` | `datetime` | When emitted |
 
-```python
-import asyncio, json, socket, os
-from pathlib import Path
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
-from ..services.claude_runner import run_claude_audit
-from ..services.finding_service import FindingService
+### Finding Taxonomy
 
-router = APIRouter()
+**Severities:**
 
-@router.post("/{assignment_id}")
-async def start_audit(assignment_id: str) -> dict:
-    """Start an audit. Returns run_id immediately. Poll /stream for results."""
-    run_id = await FindingService.create_run(assignment_id)
-    # Fire and forget — SSE stream is how client tracks progress
-    asyncio.create_task(run_claude_audit(assignment_id, run_id))
-    return {"run_id": run_id, "assignment_id": assignment_id}
+| Severity | Meaning |
+|----------|---------|
+| `gap` | Critical issue requiring action |
+| `warn` | Potential problem worth reviewing |
+| `info` | Observation, no action needed |
+| `ok` | Explicitly verified as correct |
 
-@router.get("/{run_id}/stream")
-async def audit_stream(run_id: str):
-    """
-    SSE endpoint. Streams Finding events as Claude Code discovers them.
-    Also streams pass_start, pass_done, tool_call, done events.
-    """
-    async def event_generator():
-        # Listen on Unix socket for findings from emit-mcp
-        sock_path = "/tmp/audit_emit.sock"
-        server = await asyncio.start_unix_server(
-            lambda r, w: None, path=sock_path
-        )
+**Types** (expanded from APP.md):
 
-        queue: asyncio.Queue = asyncio.Queue()
+| Type | Description | Example |
+|------|-------------|---------|
+| `clarity` | Ambiguous or unclear instructions | "Submit your analysis" — no format specified |
+| `rubric_mismatch` | Rubric criterion not in instructions or vice versa | Rubric grades "stakeholder analysis" (15pts); instructions never mention it |
+| `rubric_drift` | Rubric updated but instructions weren't — they now contradict | Rubric criteria changed mid-semester, instructions still reference old criteria |
+| `assumption_gap` | Unstated prerequisite knowledge | Assumes APA format knowledge; never introduced |
+| `implicit_prerequisite` | Knowledge assumed from content students may have missed | Assumes vocabulary from a lecture with low attendance |
+| `dependency_gap` | Missing explicit link to prior work | Uses data from Lab 3 but never says so |
+| `format_mismatch` | Incompatible artifact formats between linked assignments | Week 5 produces bullet list; Week 8 expects formatted report |
+| `orphan` | No prior dependencies after week 1 | Peer review with no instruction on giving feedback |
+| `cascade_risk` | Failure here breaks downstream assignments | Weak data collection in Week 5 breaks analysis in Week 8 and final in Week 13 |
+| `curriculum_gap` | Time gap where bridging content should exist | Nothing between Weeks 8–11 introduces iteration; Week 11 requires it |
+| `broken_file_link` | References a file that doesn't exist | Assignment links to a template that's missing from course files |
 
-        async def handle_connection(reader, writer):
-            data = await reader.readline()
-            if data:
-                await queue.put(json.loads(data.decode()))
+### GraphEdge (`backend/models/graph.py`)
 
-        async with server:
-            # Also tail Claude Code subprocess stdout for pass events
-            while True:
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=0.5)
-                    yield f"data: {json.dumps({'type': 'finding', 'data': event})}\n\n"
-                except asyncio.TimeoutError:
-                    # Check if run is complete
-                    run = await FindingService.get_run(run_id)
-                    if run["status"] in ("done", "error"):
-                        yield f"data: {json.dumps({'type': 'done', 'total_findings': run['total_findings']})}\n\n"
-                        break
-                    yield "data: {\"type\": \"heartbeat\"}\n\n"
+Directed relationship between nodes. Stored in `data/graph.json`.
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
-```
+| Field | Type | Purpose |
+|-------|------|---------|
+| `source` | `str` | Source node ID |
+| `target` | `str` | Target node ID |
+| `edge_type` | `EdgeType` | explicit, inferred, artifact, gap |
+| `label` | `str` | Human-readable description |
+| `evidence` | `str?` | Why this edge exists |
+| `confidence` | `float?` | 0.0–1.0 for inferred edges |
+| `derived_at` | `datetime` | When this edge was created |
 
-### `backend/services/claude_runner.py`
+**Edge types** (from APP.md):
 
-```python
-import asyncio, json
-from pathlib import Path
+| Type | Meaning |
+|------|---------|
+| `explicit` | Assignment directly references a prior one |
+| `inferred` | Semantic similarity + AI reasoning suggests dependency |
+| `artifact` | One assignment produces output consumed by another |
+| `gap` | Dependency should exist but doesn't (or format is wrong) |
 
-COMMANDS_DIR = Path(".claude/commands")
+### AuditRun (`backend/models/audit.py`)
 
-async def run_claude_audit(assignment_id: str, run_id: str) -> None:
-    """
-    Spawn Claude Code as a subprocess with the /audit slash command.
-    Claude Code's stream-json output is logged but findings come via emit-mcp.
-    """
-    prompt = f"/audit {assignment_id} {run_id}"
+Execution record. Stored in SQLite `audit_runs` table.
 
-    proc = await asyncio.create_subprocess_exec(
-        "claude",
-        "--output-format", "stream-json",
-        "--allowedTools",
-        "mcp__fs__read_node,mcp__fs__list_nodes,mcp__chromadb__query_similar,"
-        "mcp__graph__get_neighbors,mcp__emit__emit_finding",
-        "-p", prompt,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=str(Path.cwd())
-    )
+| Field | Type | Purpose |
+|-------|------|---------|
+| `id` | `str` | UUID |
+| `assignment_id` | `str` | Target node |
+| `status` | `str` | running, done, error |
+| `pass1_findings` | `int` | Count from clarity pass |
+| `pass2_findings` | `int` | Count from dependency pass |
+| `pass3_findings` | `int` | Count from forward impact pass |
+| `total_findings` | `int` | Sum |
+| `started_at` | `datetime` | When audit began |
+| `finished_at` | `datetime?` | When audit completed |
+| `error_message` | `str?` | Error details if failed |
 
-    # Tail stdout for stream-json events (pass markers, tool calls)
-    async for line in proc.stdout:
-        try:
-            event = json.loads(line.decode().strip())
-            # Log or forward pass_start/pass_done events to a separate queue
-            # These could also be written to findings.db as audit_run metadata
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            pass
+### SQLite Schema
 
-    await proc.wait()
-
-    # Mark run complete in DB
-    from .finding_service import FindingService
-    status = "done" if proc.returncode == 0 else "error"
-    await FindingService.complete_run(run_id, status)
-```
+Three tables: `audit_runs`, `findings`, `ingest_log`. Key indexes on `findings(assignment_id)`, `findings(severity)`, `findings(audit_run_id)`, `audit_runs(assignment_id)`. Full DDL lives in `scripts/setup_db.py`.
 
 ---
 
-## Phase 4: Claude Code Slash Commands
+## Backend API
 
-### `CLAUDE.md` (root)
+### Route Reference
 
-```markdown
-# Course Audit — Claude Code Orchestrator
+| Method | Path | Purpose |
+|--------|------|---------|
+| `GET` | `/api/nodes` | List nodes (query: `type`, `week`, `status`) |
+| `GET` | `/api/nodes/{id}` | Get node with finding counts |
+| `PATCH` | `/api/nodes/{id}` | Update node fields |
+| `POST` | `/api/audit/{assignment_id}` | Start audit → returns `{run_id}` |
+| `GET` | `/api/audit/{run_id}/stream` | SSE stream of live findings |
+| `GET` | `/api/audit/runs` | List all audit runs |
+| `GET` | `/api/audit/runs/{run_id}` | Audit run details + findings |
+| `GET` | `/api/findings` | List findings (query: `assignment_id`, `severity`, `type`) |
+| `GET` | `/api/findings/{assignment_id}` | All findings for one assignment |
+| `GET` | `/api/graph` | Full graph state (nodes, edges, flags) |
+| `POST` | `/api/graph/rebuild` | Trigger `/rebuild-graph` via Claude Code |
+| `GET` | `/api/graph/node/{id}` | Node with its edges |
+| `POST` | `/api/ingest/zip` | Upload + start IMSCC ZIP ingestion |
+| `POST` | `/api/ingest/course` | Trigger Canvas MCP ingestion via Claude Code |
+| `POST` | `/api/ingest/embed-all` | Re-embed all nodes via Chroma MCP |
+| `GET` | `/api/ingest/status` | Current ingestion status + log |
 
-You are auditing a Foundations of Engineering Lab course (EGN 3000L) at USF.
-Your goal is to identify clarity problems, curriculum gaps, dependency mismatches,
-and rubric inconsistencies across all course assignments and pages.
+### SSE Streaming Architecture
 
-## Available slash commands
+When an audit is triggered:
 
-- /audit <assignment_id> <run_id> — Audit a single assignment (3 passes)
-- /audit-all — Audit all assignments in parallel
-- /ingest-canvas <zip_path> — Ingest Canvas export ZIP
-- /embed-all — Embed all nodes into ChromaDB
-- /rebuild-graph — Re-derive all dependency edges
-- /summarize-findings — Course-level audit summary report
+1. FastAPI creates an `AuditRun` record in SQLite (status: `running`)
+2. Spawns Claude Code as async subprocess with `/audit` slash command and restricted `--allowedTools`
+3. Returns `{run_id}` immediately to client
+4. Client opens `EventSource` connection to `/api/audit/{run_id}/stream`
+5. SSE generator polls SQLite every 500ms: `SELECT * FROM findings WHERE audit_run_id = ? AND created_at > ?`
+6. New findings are yielded as `data: {"type": "finding", "data": {...}}` SSE events
+7. Heartbeat (`{"type": "heartbeat"}`) sent every 500ms when idle — prevents connection timeout
+8. When `AuditRun.status` flips to `done` or `error`, sends `{"type": "done"}` and closes
 
-## MCP tools available
+### Claude Code Runner (`backend/services/claude_runner.py`)
 
-| Tool             | Server   | Purpose                                             |
-| ---------------- | -------- | --------------------------------------------------- |
-| read_node        | fs       | Read a course node JSON by ID                       |
-| write_node       | fs       | Write/merge a course node JSON                      |
-| list_nodes       | fs       | List node IDs, filtered by type/week                |
-| read_many_nodes  | fs       | Batch read multiple nodes                           |
-| upsert_embedding | chromadb | Embed and store a node                              |
-| query_similar    | chromadb | RAG: find semantically similar prior nodes          |
-| add_node         | graph    | Add node to dependency graph                        |
-| add_edge         | graph    | Add directed edge to dependency graph               |
-| get_neighbors    | graph    | Get upstream/downstream nodes for a node            |
-| emit_finding     | emit     | Record an audit finding (streams to dashboard live) |
-
-## Principles
-
-1. Always emit findings immediately when discovered — never batch until end of pass
-2. Quote the exact text that triggered each finding (evidence field)
-3. Be specific: "The rubric criterion 'stakeholder analysis' (15pts) does not appear
-   in the instructions" is good. "Instructions could be clearer" is not.
-4. Link findings to related nodes when relevant (linked_node field)
-5. Inferred edges need confidence scores (0.0–1.0) based on reasoning quality
-```
-
-### `.claude/commands/audit.md`
-
-```markdown
-Audit assignment $1 with run ID $2.
-
-Read the assignment: read_node($1)
-Read course context: list_nodes(type="assignment") then read nearby week nodes.
+- Spawns `claude` CLI as async subprocess via `asyncio.create_subprocess_exec`
+- Passes slash command via `-p` flag: `claude -p "/audit {id} {run_id}" --output-format stream-json --allowedTools ...`
+- Restricts available tools to only what the audit needs
+- Tails `stream-json` stdout for pass markers and tool call events
+- Updates `AuditRun.status` when process exits (done on returncode 0, error otherwise)
+- Captures stderr for error diagnostics
 
 ---
 
-## Pass 1 — Standalone clarity audit
+## Canvas Ingestion Pipeline
 
-Announce: "Starting Pass 1: Clarity audit for $1"
+### Primary: Canvas MCP (API-driven)
 
-For every instruction sentence, rubric criterion, and submission requirement:
+Claude Code uses the Canvas MCP to walk the entire course structure:
 
-A) Instructions clarity
+1. **Module walk** — List all modules, then list items per module. Record: title, URL, type, module name, module order, item order.
+2. **Assignment extraction** — For each assignment: get full description, instructions, due dates, submission types. Get rubric with all criteria, point values, and level descriptions.
+3. **Page extraction** — For each wiki page: get HTML body, extract links to other pages and assignments, strip to plain text.
+4. **Announcement extraction** — Get all announcements chronologically. Flag any that reference an assignment by name (these often contain patches to broken instructions).
+5. **File inventory** — List all course files. Match to assignments that reference them.
+6. **Node writing** — Use `audit.nodes_write()` for each extracted item. Set `source: "canvas_mcp"`.
+
+### Fallback: IMSCC ZIP Parser
+
+If Canvas API access is limited, parse the Canvas export ZIP via `backend/services/ingest/canvas_zip.py`:
+
+- `imsmanifest.xml` → resource index with IDs and types
+- `course_settings/module_meta.xml` → module ordering
+- `wiki_content/` → HTML pages
+- `web_resources/` → PDF/DOCX file attachments
+- `assignment_groups/` → assignment XMLs with rubric data
+
+Text extraction: `pypdf` for PDFs, `python-docx` for DOCX, `beautifulsoup4` for HTML. Concurrent extraction with `asyncio.Semaphore(10)`.
+
+### Post-Ingestion Passes
+
+After nodes are populated (by either method):
+
+1. **Embedding pass** (`/embed-all`) — For each node, build embedding text from `title + description + instructions[:2000]`, upsert to ChromaDB via Chroma MCP with metadata `{type, week, module, status}`. Batches of 20, skip nodes with no text content.
+
+2. **Graph derivation** (`/rebuild-graph`) — For each assignment node ordered by week:
+   - Add to graph
+   - `linked_assignments` / `linked_pages` → add `explicit` edges
+   - Query Chroma MCP for similar prior-week nodes → reason about dependency → add `inferred` edges with confidence scores
+   - No incoming edges + week > 1 → flag as `orphan`
+   - Format incompatibilities between linked nodes → add `gap` edges
+   - Persist via `graph_serialize()`
+
+---
+
+## AI Audit Engine
+
+### Three-Pass Audit
+
+Each assignment goes through three sequential reasoning passes. Findings are emitted **immediately** via `emit_finding()` — never batched.
+
+**Pass 1 — Standalone Clarity:**
 
 - Is any instruction sentence ambiguous or open to multiple interpretations?
-- Are any assumed tools, templates, or formats never introduced?
-- Is the submission format (file type, naming, location) clearly specified?
-  → emit_finding for each issue found
+- Are assumed tools, templates, or formats never introduced?
+- Is submission format (file type, naming, location) clearly specified?
+- For each rubric criterion: does it appear explicitly in the instructions?
+- Do any criteria use undefined language ("quality", "professionalism") without context?
+- Are point weights reasonable (>60% on one criterion is flagged)?
+- Could a student complete this knowing only what's on this page?
+- What prior knowledge is assumed? Is that assumption stated?
 
-B) Rubric alignment
+**Pass 2 — Backward Dependencies (RAG):**
 
-- For each rubric criterion, does it appear explicitly in the instructions?
-- Does any criterion use language (e.g. "quality", "professionalism") without
-  defining what that means in context?
-- Are point weights reasonable? (e.g. >60% on one criterion is worth flagging)
-  → emit_finding for each mismatch
+- Query Chroma MCP for similar nodes from prior weeks (`week_before` filter)
+- For each high-similarity result (>0.65): read that node, reason whether this assignment assumes knowledge/skills/artifacts from it
+- If dependency exists and is stated → healthy (note it)
+- If dependency exists and is NOT stated → `assumption_gap` or `implicit_prerequisite`
+- If artifact formats are incompatible → `format_mismatch`
+- If no incoming graph edges and week > 1 → `orphan`
 
-C) Standalone completeness
+**Pass 3 — Forward Impact (Graph Traversal):**
 
-- Could a student complete this assignment knowing only the instructions on this page?
-- If not, what prior knowledge is assumed? Is that assumption stated?
-  → emit_finding for each unstated assumption
+- Get downstream nodes via `graph_get_neighbors()`
+- For each: does this assignment's output match what downstream expects as input?
+- If mismatch → `format_mismatch` linked to downstream node
+- If poor submission here would break downstream → `cascade_risk`
+- If >2 week gap with no bridging content → `curriculum_gap`
 
----
+### Slash Commands
 
-## Pass 2 — Backward dependency check (RAG)
+All defined in `.claude/commands/`. Key commands:
 
-Announce: "Starting Pass 2: Dependency check for $1"
+| Command | Purpose |
+|---------|---------|
+| `/audit <id> <run_id>` | Full 3-pass audit of one assignment |
+| `/audit-all` | Audit all assignments (parallel batches of 4) |
+| `/ingest-course <course_id>` | Pull entire course via Canvas MCP |
+| `/embed-all` | Embed all nodes into ChromaDB |
+| `/rebuild-graph` | Re-derive all dependency edges |
+| `/summarize-findings` | Course-level report across all assignments |
 
-Get this assignment's week from the node data.
-Call query_similar(text=instructions, week_before=this_week, n_results=6)
+### CLAUDE.md Orchestrator
 
-For each similar result above 0.65 similarity score:
-
-- Read that node: read_node(result.id)
-- Reason: Does assignment $1 assume knowledge, skills, or artifacts that this
-  prior node produces or teaches?
-- If yes and it's explicitly stated in $1 → note as healthy dependency
-- If yes and it's NOT stated → emit_finding (assumption_gap, link to that node)
-- Does $1 expect an artifact (dataset, doc, sketch) from that node?
-  If yes, are the format expectations compatible? If not → emit_finding (format_mismatch)
-
-Also check: does $1 have ANY prior-week incoming edges in the graph?
-get_neighbors($1) → if upstream is empty and week > 1 → emit_finding (orphan)
-
----
-
-## Pass 3 — Forward impact check (graph traversal)
-
-Announce: "Starting Pass 3: Forward impact for $1"
-
-get_neighbors($1) → get downstream nodes
-For each downstream node: read_node(downstream_id)
-
-- Does what $1 asks students to produce match what downstream expects as input?
-  Check format, depth, naming conventions.
-  If mismatch → emit_finding (format_mismatch, link downstream node)
-
-- If $1 were submitted poorly or incompletely, which downstream assignments
-  would be most affected? If critical → emit_finding (cascade_risk)
-
-- Is there a week gap between $1 and its dependent (>2 weeks with no bridging content)?
-  If yes → emit_finding (curriculum_gap)
+The root `CLAUDE.md` file instructs Claude Code on:
+- Available slash commands and when to use them
+- Available MCP tools grouped by server
+- Audit principles (emit immediately, quote evidence, be specific, link related nodes)
+- Finding severity guidelines
+- Confidence scoring for inferred edges
 
 ---
 
-Announce: "Audit complete for $1. All findings emitted."
-```
+## Frontend Architecture
 
-### `.claude/commands/audit-all.md`
+### Pages
 
-```markdown
-Run a full audit of all assignment nodes in the course.
+| Route | Purpose | Key Features |
+|-------|---------|-------------|
+| `/` | Dashboard | Stats cards (gap/warn/clean counts), quick actions, recent findings feed, ingest status banner |
+| `/assignments` | Assignment list | Left sidebar filters (type, severity, week), search bar, week-grouped cards with finding pills, click → detail panel |
+| `/assignments/[id]` | Assignment detail | Metadata header, "Run Audit" button, three-column findings by pass, upstream/downstream linked nodes, rubric text |
+| `/graph` | Dependency graph | Full-width D3 force layout, node color by type, ring by status, click node/edge for detail, filter bar (gaps/orphans/inferred) |
+| `/audit` | Audit controls | Run on specific assignment (dropdown), run all, history table with click-through |
+| `/audit/[runId]` | Live audit stream | Pass progress indicator (1 ◉ → 2 ○ → 3 ○), findings appear as animated cards via SSE, collapsible tool call log |
+| `/ingest` | Ingestion | Upload ZIP, trigger API ingest, progress bars, extracted node log, re-embed/rebuild buttons |
 
-Step 1: list_nodes(type="assignment") → get all assignment IDs
-Step 2: Sort by week ascending
-Step 3: Audit in parallel batches of 4 (to avoid overwhelming MCP servers)
-For each batch: spawn /audit <id> <new_run_id> concurrently
-Step 4: After all complete, run /summarize-findings
+### Component Architecture
 
-Report total: assignments audited, findings by severity, top 5 most problematic nodes.
-```
+- **Layout**: Persistent sidebar (nav + course name) + top bar (breadcrumbs + actions)
+- **Assignments**: Card-based list with filter sidebar, slide-over detail panel with tabs (Recommendations, Links, Rubric)
+- **Graph**: D3 force simulation — nodes positioned by week on Y axis, spread on X. Solid edges for explicit, dashed for inferred, red for gaps. Canvas rendering for >50 nodes.
+- **Audit Stream**: `EventSource`-based SSE consumer (`useAuditStream` hook), findings animate in as cards, pass progress stepper
+- **Ingest**: Multi-stage progress bars, scrollable log, action buttons
+
+### State Management (Zustand)
+
+Store with logical slices:
+- `nodes` — Course node data, filtered/sorted views
+- `audit` — Active runs, SSE connection state, findings cache
+- `graph` — Graph state for D3 (nodes, edges, flags, selected)
+- `ui` — Sidebar collapsed state, selected items, active filters
+
+### Design System
+
+- **Tailwind CSS v4** utility classes
+- **shadcn/ui** accessible primitives: Button, Card, Badge, Dialog, Table, Tabs, Select, Progress
+- **Severity colors** consistent everywhere: gap=red-500, warn=amber-500, info=blue-500, ok=green-500
+- **Dark mode** from day one via Tailwind `dark:` variant
+- **Responsive** desktop-first, functional on tablet (≥768px)
 
 ---
 
-## Phase 5: Next.js Frontend
+## Testing Strategy
 
-### Page Structure
+| Layer | Tool | What to Test |
+|-------|------|-------------|
+| Pydantic models | **pytest** | Validation rules, serialization, edge cases, strict mode enforcement |
+| Services | **pytest** + **aiosqlite** | CRUD correctness, error paths, concurrent access |
+| API routes | **pytest** + **httpx** `AsyncClient` | All endpoints, status codes, response shapes, query params |
+| MCP tools | **pytest** | Input/output contracts, error responses, merge logic |
+| React components | **Vitest** + **React Testing Library** | Interactive components, SSE handling, filter logic |
+| SSE integration | **Vitest** | Stream parsing, reconnection, heartbeat handling |
+| E2E flows | **Playwright** | Full audit flow (trigger → stream → findings), graph interaction, ingestion |
 
-**`/` — Dashboard**
+### Test Data
 
-- Summary stats: total assignments, gap count, warn count, clean count, last audit date
-- Quick-action cards: "Run full audit", "View graph", "Re-ingest course"
-- Recent findings feed (last 10 across all assignments)
-- Ingest status banner if ingestion is in progress
+`scripts/seed_demo.py` creates deterministic fixture data:
+- 15 assignment nodes (Weeks 1–13)
+- 3 page nodes, 2 rubric nodes, 1 lecture node
+- 20 graph edges (explicit, inferred, gap mix)
+- 8 pre-seeded findings across 4 assignments
 
-**`/assignments` — Assignment list**
+This data is usable by all test layers and enables full demo mode.
 
-- Left sidebar: filter by type, severity, week
-- Search bar
-- Week-grouped list of assignment cards (Canvas-style rows but cleaner)
-- Each card: type icon, name, week, finding pills (gap/warn/info counts)
-- Right panel opens on click: tabs for Recommendations, Links, Rubric
+---
 
-**`/assignments/[id]` — Assignment detail**
+## Security Considerations
 
-- Full page view (not panel) for deep dives
-- Top section: assignment metadata, Canvas URL link, last audited date
-- "Run audit" button → triggers SSE stream, findings appear live below
-- Three-column findings by pass (Pass 1 / Pass 2 / Pass 3)
-- Linked nodes section: upstream and downstream, with edge type badges
-- Rubric text rendered cleanly
+This is a local-only tool running on the instructor's machine, but basic hygiene matters:
 
-**`/graph` — Dependency graph**
+- **Canvas API token**: Stored in `.env`, covered by `.gitignore`. Never logged or displayed in UI.
+- **CORS**: Restricted to `localhost:3000` only.
+- **File uploads**: Validate ZIP structure before extraction. Check for zip bombs (ratio check, max file count). Reject non-IMSCC ZIPs.
+- **SQL injection**: All SQLite queries use parameterized statements via aiosqlite. No string interpolation in queries.
+- **Path traversal**: Node IDs sanitized to `[a-zA-Z0-9_-]` before use in filesystem paths. Reject IDs with `..` or `/`.
+- **Subprocess injection**: Claude Code arguments are constructed from validated inputs, never raw user strings.
+- **Student data**: If Canvas data includes student PII, it stays local. No data leaves the machine. Consider adding a `--no-student-data` flag to ingestion that strips student names/IDs.
 
-- Full-width D3 force-directed graph
-- Node color by type, ring color by status
-- Click node → side panel (same as assignment detail panel)
-- Click edge → edge info (type, evidence, confidence)
-- Filter bar: All | Gaps | Orphans | Inferred edges
-- Zoom + pan (D3 zoom behavior)
+---
 
-**`/audit` — Audit controls**
+## Error Handling
 
-- Run audit on specific assignment (dropdown)
-- Run audit on all assignments
-- Audit history table: run ID, assignment, started, duration, findings count, status
-- Click history row → `/audit/[runId]`
+| Scenario | Strategy |
+|----------|----------|
+| MCP tool failure | Each tool returns structured `{"error": "..."}`. Claude Code handles gracefully and retries or skips. |
+| Claude Code subprocess crash | `claude_runner.py` catches non-zero exit, marks AuditRun as `error`, records stderr in `error_message`. |
+| SSE disconnection | Frontend `useAuditStream` hook auto-reconnects with `last_seen` timestamp, resumes from where it left off. |
+| Ingestion node failure | Per-node error tracking in `ingest_log` table. Failed nodes logged but don't block others. |
+| ChromaDB embedding failure | Log error, skip node. Audit Pass 2 falls back to text-only comparison if vector search returns no results. |
+| Canvas MCP timeout | Retry with exponential backoff (3 attempts). If all fail, log and continue with partial data. |
+| Corrupt graph.json | `graph_service.py` validates JSON structure on load. If corrupt, rebuild from nodes. |
 
-**`/audit/[runId]` — Live audit stream**
+---
 
-- Real-time view of a running or completed audit
-- Pass progress indicator (Pass 1 ◉ → Pass 2 ○ → Pass 3 ○)
-- Findings appear as cards in real-time via SSE
-- Tool call log (collapsible): shows each MCP tool call Claude made
+## Accessibility
 
-**`/ingest` — Ingestion controls**
+- All **shadcn/ui** components are WCAG 2.1 AA compliant by default (focus management, ARIA attributes, keyboard navigation)
+- Severity colors **always paired** with text labels and icons — never color-only indicators
+- Graph visualization has **keyboard navigation** (tab between nodes, enter to select) and screen reader descriptions for nodes/edges
+- **Focus management** for modals and slide-over panels (trap focus, return on close)
+- Minimum **4.5:1 contrast ratios** enforced — Tailwind config restricts palette
+- All interactive elements have **visible focus rings** (Tailwind `ring` utilities)
+- Finding cards have **semantic HTML** (article, heading hierarchy, landmark regions)
+- **Skip navigation** link on every page
 
-- Upload Canvas ZIP button
-- Ingestion progress: nodes parsed, embedded, graph edges derived
-- Log of extracted nodes (filterable)
-- "Re-embed all" and "Rebuild graph" action buttons
+---
 
-### Key Frontend Components
+## Performance Considerations
 
-**`AuditStream.tsx`** — SSE consumer
-
-```typescript
-// frontend/components/audit/AuditStream.tsx
-'use client'
-import { useEffect, useState } from 'react'
-import { Finding, AuditStreamEvent } from '@/lib/types'
-import FindingCard from '../assignments/FindingCard'
-
-interface AuditStreamProps {
-  runId: string
-}
-
-export default function AuditStream({ runId }: AuditStreamProps) {
-  const [findings, setFindings] = useState<Finding[]>([])
-  const [currentPass, setCurrentPass] = useState(0)
-  const [done, setDone] = useState(false)
-
-  useEffect(() => {
-    const es = new EventSource(`/api/audit/${runId}/stream`)
-
-    es.onmessage = (e) => {
-      const event: AuditStreamEvent = JSON.parse(e.data)
-
-      if (event.type === 'finding') {
-        setFindings(prev => [event.data, ...prev])
-      } else if (event.type === 'pass_start') {
-        setCurrentPass(event.pass)
-      } else if (event.type === 'done') {
-        setDone(true)
-        es.close()
-      }
-    }
-
-    return () => es.close()
-  }, [runId])
-
-  return (
-    <div>
-      <PassProgress current={currentPass} done={done} />
-      <div className="space-y-3 mt-4">
-        {findings.map(f => <FindingCard key={f.id} finding={f} />)}
-      </div>
-    </div>
-  )
-}
-```
-
-**`DependencyGraph.tsx`** — D3 force layout
-
-```typescript
-// frontend/components/graph/DependencyGraph.tsx
-'use client'
-import { useEffect, useRef, useState } from 'react'
-import * as d3 from 'd3'
-import { GraphState, CourseNode } from '@/lib/types'
-
-const NODE_COLOR: Record<string, string> = {
-  assignment: '#7F77DD',
-  lecture: '#1D9E75',
-  page: '#378ADD',
-  rubric: '#BA7517',
-}
-const STATUS_RING: Record<string, string> = {
-  gap: '#E24B4A',
-  orphan: '#EF9F27',
-  warn: '#BA7517',
-  ok: 'transparent',
-  unaudited: 'transparent',
-}
-
-export default function DependencyGraph({
-  graphState,
-  nodes
-}: {
-  graphState: GraphState
-  nodes: CourseNode[]
-}) {
-  const svgRef = useRef<SVGSVGElement>(null)
-  const [selected, setSelected] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (!svgRef.current) return
-    // D3 force simulation setup
-    // Nodes positioned by week on Y axis, spread on X
-    // Click handlers → setSelected
-    // Zoom + pan behavior
-    // Edge stroke-dasharray by type (solid/dashed/dotted)
-  }, [graphState, nodes])
-
-  return (
-    <div className="relative w-full h-full">
-      <svg ref={svgRef} className="w-full h-full" />
-      {selected && <NodeDetailPanel nodeId={selected} onClose={() => setSelected(null)} />}
-    </div>
-  )
-}
-```
+- **Audit parallelism**: `/audit-all` processes assignments in batches of 4 to avoid overwhelming MCP servers. Each batch completes before next starts.
+- **ChromaDB queries**: Filtered by `week < current` to minimize search space. Max 6 results per query.
+- **Frontend rendering**:
+  - Server Components for static content (layout, metadata, assignment text)
+  - Client Components only for interactive parts (graph canvas, SSE stream, filters)
+  - D3 graph switches to **canvas rendering** when node count exceeds 50
+  - Finding cards use `React.memo` to avoid re-render on new findings arriving
+- **SQLite performance**: Indexed on `assignment_id`, `severity`, `audit_run_id`, `created_at`. WAL mode for concurrent reads during SSE polling.
+- **SSE efficiency**: 500ms poll interval balances responsiveness with DB load. Heartbeats prevent timeout without adding payload.
+- **Data loading**: Assignment list uses pagination (50 per page). Graph loads in full (expected <100 nodes for a single course).
 
 ---
 
@@ -1457,189 +737,68 @@ export default function DependencyGraph({
 
 ### Prerequisites
 
-```bash
-# Verify Claude Code CLI is installed and authenticated
-claude --version
-claude -p "Say hello"   # Should respond without API key prompt
+- **Claude Code CLI** — authenticated, Max plan active
+- **Python 3.11+** — for backend and MCP servers
+- **Node.js 18+** — for Next.js frontend
+- **uv** — Python package manager: `curl -LsSf https://astral.sh/uv/install.sh | sh`
 
-# Python 3.11+
-python --version
-
-# Node 18+
-node --version
-```
-
-### Installation Script (`scripts/setup.sh`)
+### Quick Start
 
 ```bash
-#!/bin/bash
-set -e
+# 1. Python environment
+uv venv && source .venv/bin/activate
+uv pip install -e ".[dev]"
 
-echo "→ Creating Python virtual environment"
-python -m venv .venv
-source .venv/bin/activate
-
-echo "→ Installing Python dependencies"
-pip install fastapi uvicorn[standard] aiosqlite pydantic-settings \
-            chromadb fastmcp networkx pypdf python-docx beautifulsoup4 \
-            python-multipart
-
-echo "→ Setting up SQLite database"
+# 2. SQLite schema
 python scripts/setup_db.py
 
-echo "→ Installing frontend dependencies"
+# 3. Frontend
 cd frontend && npm install && cd ..
 
-echo "→ Seeding demo data (placeholder assignments)"
+# 4. Seed demo data
 python scripts/seed_demo.py
 
-echo ""
-echo "✓ Setup complete"
-echo ""
-echo "To start:"
-echo "  Terminal 1: source .venv/bin/activate && uvicorn backend.main:app --reload"
-echo "  Terminal 2: cd frontend && npm run dev"
-echo "  Open: http://localhost:3000"
+# 5. Run (two terminals)
+#    Terminal 1: uvicorn backend.main:app --reload --port 8000
+#    Terminal 2: cd frontend && npm run dev
+#    Open: http://localhost:3000
 ```
 
-### `pyproject.toml`
+### Makefile Shortcuts
 
-```toml
-[project]
-name = "course-audit"
-version = "0.1.0"
-requires-python = ">=3.11"
-dependencies = [
-    "fastapi>=0.111.0",
-    "uvicorn[standard]>=0.29.0",
-    "aiosqlite>=0.20.0",
-    "pydantic>=2.7.0",
-    "pydantic-settings>=2.3.0",
-    "chromadb>=0.5.0",
-    "fastmcp>=0.1.0",
-    "networkx>=3.3",
-    "pypdf>=4.2.0",
-    "python-docx>=1.1.0",
-    "beautifulsoup4>=4.12.0",
-    "python-multipart>=0.0.9",
-]
-
-[tool.pyright]
-strict = true
-pythonVersion = "3.11"
+```makefile
+make setup      # Full setup (venv, deps, db, seed, frontend)
+make dev        # Start backend + frontend in parallel
+make seed       # Re-seed demo data
+make test       # Run all tests (pytest + vitest)
+make lint       # Run linters (ruff + eslint)
+make check      # Verify all dependencies installed
 ```
 
-### `backend/config.py`
+### Environment Variables (`.env`)
 
-```python
-from pydantic_settings import BaseSettings, SettingsConfigDict
-from pathlib import Path
-
-class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", strict=True)
-
-    # Paths
-    nodes_dir: Path = Path("data/nodes")
-    chroma_dir: Path = Path("data/chroma")
-    graph_path: Path = Path("data/graph.json")
-    db_path: Path = Path("data/findings.db")
-    emit_socket: str = "/tmp/audit_emit.sock"
-
-    # Frontend
-    frontend_origin: str = "http://localhost:3000"
-
-    # Claude Code
-    claude_bin: str = "claude"
-    claude_allowed_tools: str = (
-        "mcp__fs__read_node,mcp__fs__list_nodes,mcp__fs__read_many_nodes,"
-        "mcp__chromadb__query_similar,"
-        "mcp__graph__get_neighbors,"
-        "mcp__emit__emit_finding"
-    )
-
-settings = Settings()
+```
+NODES_DIR=./data/nodes
+CHROMA_DIR=./data/chroma
+GRAPH_PATH=./data/graph.json
+DB_PATH=./data/findings.db
+CANVAS_API_TOKEN=       # [PENDING] From Trevor
+CANVAS_BASE_URL=        # [PENDING] From Trevor
+CANVAS_COURSE_ID=       # [PENDING] From Trevor
+FRONTEND_ORIGIN=http://localhost:3000
+CLAUDE_BIN=claude
 ```
 
 ---
 
-## Demo Mode (No Canvas Data Yet)
+## Notes for Implementers
 
-Run `scripts/seed_demo.py` to populate `data/nodes/` with placeholder assignments
-matching a typical Foundations of Engineering lab structure. This gives the frontend
-and audit pipeline something real to work with before the actual course files arrive.
-
-The seed script creates:
-
-- 15 assignment nodes (Weeks 1–13)
-- 3 page nodes (lab safety, rubric page, template page)
-- 2 rubric nodes
-- 1 lecture node
-- 20 graph edges (mix of explicit, inferred, gap)
-- 8 pre-seeded findings across 4 assignments
-
-Everything the dashboard, graph viewer, and audit stream need to run in full demo mode.
-
----
-
-## What to Build First (Implementation Order)
-
-1. **`scripts/setup_db.py`** — SQLite schema, nothing works without this
-2. **`scripts/seed_demo.py`** — Demo data, lets frontend dev start immediately
-3. **`mcp/fs_mcp.py`** — Every other MCP and all slash commands depend on this
-4. **`mcp/emit_mcp.py`** — Core of the live streaming architecture
-5. **`backend/main.py` + routers** — FastAPI app skeleton with all routes stubbed
-6. **`backend/routers/audit.py`** — SSE stream (most complex backend piece)
-7. **`backend/services/claude_runner.py`** — Claude Code subprocess spawner
-8. **`mcp/chromadb_mcp.py`** — Needed for Pass 2 of audits
-9. **`mcp/graph_mcp.py`** — Needed for Pass 3 of audits
-10. **`.claude/commands/audit.md`** — Core slash command
-11. **`CLAUDE.md`** — Orchestrator instructions
-12. **Next.js frontend** — All pages, starting with `/assignments` (most used)
-13. **`backend/services/ingest/`** — Canvas ZIP parser (needs real data from Trevor)
-14. **`.claude/commands/ingest-canvas.md`** — Agent browser walk (needs Canvas URL)
-
----
-
-## API Routes Reference
-
-```
-GET  /api/nodes                          List all nodes (query: type, week, status)
-GET  /api/nodes/{id}                     Get single node with findings
-PATCH /api/nodes/{id}                    Update node fields
-
-POST /api/audit/{assignment_id}          Start audit → returns {run_id}
-GET  /api/audit/{run_id}/stream          SSE stream of findings
-GET  /api/audit/runs                     List all audit runs
-GET  /api/audit/runs/{run_id}            Get audit run details
-
-GET  /api/findings                       List findings (query: assignment_id, severity, type)
-GET  /api/findings/{assignment_id}       Get all findings for one assignment
-
-GET  /api/graph                          Get full graph.json
-POST /api/graph/rebuild                  Trigger /rebuild-graph slash command
-GET  /api/graph/node/{id}                Get node with its edges
-
-POST /api/ingest/zip                     Upload + start Canvas ZIP ingestion
-POST /api/ingest/embed-all               Re-embed all nodes
-GET  /api/ingest/status                  Current ingestion status + log
-```
-
----
-
-## Notes for the Implementing Model
-
-- **Do not use any API key.** Claude Code runs via `claude` CLI using the Max plan session.
-  The `--output-format stream-json` flag is what makes subprocess output parseable.
-- **Pydantic strict mode is required everywhere.** Every model has `model_config = {"strict": True}`.
-  Never use `dict` where a typed model should be used.
-- **ChromaDB runs embedded.** `chromadb.PersistentClient(path=str(CHROMA_DIR))` — no server process.
-- **The emit socket is ephemeral.** Delete `/tmp/audit_emit.sock` on startup if it exists.
-- **graph.json is never hand-edited.** It is always written by `graph-mcp` or `rebuild-graph`.
-- **Demo mode must work offline.** `seed_demo.py` creates all fixture data locally.
-  The frontend should render correctly with seeded data before any Claude Code runs.
-- **SSE heartbeats prevent connection timeout.** The SSE generator sends a heartbeat
-  every 500ms when no finding is queued. Without this, connections drop after ~30s.
-- **Slash commands use positional args.** `$1`, `$2` etc. as shown in the audit command.
-  Claude Code substitutes these from the prompt string passed with `-p`.
-- **MCP servers must be running before `claude` is spawned.** FastAPI lifespan should
-  start all four MCP servers as subprocesses on startup, and shut them down on close.
+1. **No API key needed.** Claude Code runs via `claude` CLI on the Max plan. Never import `anthropic` directly.
+2. **Pydantic strict mode everywhere.** Every model: `model_config = {"strict": True}`.
+3. **ChromaDB is accessed only via Chroma MCP.** No direct `import chromadb` in backend code. The backend reads nodes from `data/nodes/` and findings from SQLite — it doesn't touch the vector DB.
+4. **`graph.json` is never hand-edited.** Always written by Audit MCP graph tools or `/rebuild-graph`.
+5. **Demo mode works fully offline.** Seed data enables complete frontend + backend testing without Canvas access or Claude Code.
+6. **Findings are emitted immediately.** Never batch until end of pass. The dashboard streams them live — that's the core UX.
+7. **MCP servers are declared in `.claude/settings.json`.** Claude Code starts them automatically. FastAPI does NOT manage MCP server lifecycle.
+8. **Evidence is mandatory.** Every finding must include the `evidence` field — the exact quoted text that triggered it. "Instructions could be clearer" is never acceptable.
+9. **The fix-reaudit loop is the product.** Design every feature to support: see finding → fix content → re-audit → watch it go green.
