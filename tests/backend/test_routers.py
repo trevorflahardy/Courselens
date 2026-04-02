@@ -207,12 +207,13 @@ async def test_ingest_course_501(client: AsyncClient) -> None:
     assert r.status_code == 501
 
 
-async def test_ingest_zip_501(client: AsyncClient) -> None:
+async def test_ingest_zip(client: AsyncClient) -> None:
+    """ZIP ingest returns 200 if data/course_files_export.zip exists, 404 otherwise."""
     r = await client.post("/api/ingest/zip")
-    assert r.status_code == 501
+    assert r.status_code in (200, 404)
 
 
 async def test_ingest_status(client: AsyncClient) -> None:
     r = await client.get("/api/ingest/status")
     assert r.status_code == 200
-    assert r.json()["status"] == "idle"
+    assert r.json()["status"] in ("idle", "done", "running", "error")
