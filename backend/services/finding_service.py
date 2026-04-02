@@ -52,7 +52,7 @@ async def get_finding(finding_id: str) -> Finding | None:
     row = await cursor.fetchone()
     if row is None:
         return None
-    return Finding(**dict(row))
+    return Finding.model_validate(dict(row), strict=False)
 
 
 async def list_findings(
@@ -85,7 +85,7 @@ async def list_findings(
     query += " ORDER BY created_at DESC"
     cursor = await db.execute(query, params)
     rows = await cursor.fetchall()
-    return [Finding(**dict(r)) for r in rows]
+    return [Finding.model_validate(dict(r), strict=False) for r in rows]
 
 
 async def mark_findings_stale(assignment_id: str) -> int:

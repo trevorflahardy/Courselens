@@ -15,6 +15,8 @@ from backend.models.node import (
     NodeLink,
     NodeStatus,
     NodeType,
+    RubricCriterion,
+    RubricRating,
 )
 
 __all__ = [
@@ -34,4 +36,6 @@ __all__ = [
     "NodeLink",
     "NodeStatus",
     "NodeType",
+    "RubricCriterion",
+    "RubricRating",
 ]

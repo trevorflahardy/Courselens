@@ -3,13 +3,14 @@
 Creates realistic EGN 3000L course content:
 - 15 assignments across 15 weeks
 - 3 pages (syllabus, resources, peer review guide)
-- 2 rubrics
+- 2 rubrics (structured criteria)
 - 1 lecture
 - 20 edges (dependency graph)
 - 8 findings (sample audit results)
 """
 
 import hashlib
+import json
 import sqlite3
 import uuid
 from datetime import datetime, timedelta
@@ -18,8 +19,8 @@ from pathlib import Path
 DB_PATH = Path(__file__).parent.parent / "data" / "audit.db"
 
 
-def content_hash(instructions: str, rubric_text: str = "", description: str = "") -> str:
-    combined = f"{instructions}{rubric_text}{description}"
+def content_hash(description: str = "", rubric_id: str = "") -> str:
+    combined = f"{description}{rubric_id}"
     return hashlib.sha256(combined.encode()).hexdigest()[:16]
 
 
@@ -32,10 +33,105 @@ def seed() -> None:
     conn.execute("PRAGMA foreign_keys=ON")
 
     # Clear existing data
-    for table in ["ingest_log", "findings", "audit_runs", "edges", "node_links", "files", "nodes"]:
+    for table in ["ingest_log", "findings", "audit_runs", "edges", "node_links", "rubrics", "files", "nodes"]:
         conn.execute(f"DELETE FROM {table}")
 
     now = datetime.now().isoformat()
+
+    # =========================================================================
+    # RUBRICS — Structured criteria (must precede assignments that reference them)
+    # =========================================================================
+    rubrics = [
+        {
+            "id": "rubric-peer-review",
+            "title": "Peer Review Rubric",
+            "points_possible": 50.0,
+            "assignment_id": None,
+            "criteria_json": json.dumps([
+                {"id": "pr-c1", "description": "Specificity of feedback", "points": 15.0, "ratings": [
+                    {"id": "pr-c1-r1", "label": "Excellent", "points": 15.0, "description": "Feedback references specific sections, quotes, and provides detailed reasoning"},
+                    {"id": "pr-c1-r2", "label": "Good", "points": 10.0, "description": "Feedback references some specific sections"},
+                    {"id": "pr-c1-r3", "label": "Needs Work", "points": 5.0, "description": "Feedback is vague or generic"},
+                ]},
+                {"id": "pr-c2", "description": "Constructive tone", "points": 10.0, "ratings": [
+                    {"id": "pr-c2-r1", "label": "Excellent", "points": 10.0, "description": "Consistently positive, uses SBI model"},
+                    {"id": "pr-c2-r2", "label": "Needs Work", "points": 5.0, "description": "Occasionally negative or dismissive"},
+                ]},
+                {"id": "pr-c3", "description": "Coverage of all sections", "points": 10.0, "ratings": [
+                    {"id": "pr-c3-r1", "label": "Complete", "points": 10.0, "description": "All sections addressed"},
+                    {"id": "pr-c3-r2", "label": "Partial", "points": 5.0, "description": "Some sections missed"},
+                ]},
+                {"id": "pr-c4", "description": "Actionable suggestions", "points": 15.0, "ratings": [
+                    {"id": "pr-c4-r1", "label": "Excellent", "points": 15.0, "description": "Each critique includes a concrete suggestion for improvement"},
+                    {"id": "pr-c4-r2", "label": "Good", "points": 10.0, "description": "Some suggestions provided"},
+                    {"id": "pr-c4-r3", "label": "Needs Work", "points": 5.0, "description": "Critiques without suggestions"},
+                ]},
+            ]),
+        },
+        {
+            "id": "rubric-final-report",
+            "title": "Final Report Rubric",
+            "points_possible": 55.0,
+            "assignment_id": None,
+            "criteria_json": json.dumps([
+                {"id": "fr-c1", "description": "Report completeness", "points": 25.0, "ratings": [
+                    {"id": "fr-c1-r1", "label": "Excellent", "points": 25.0, "description": "All sections present and thorough"},
+                    {"id": "fr-c1-r2", "label": "Good", "points": 18.0, "description": "Most sections present"},
+                    {"id": "fr-c1-r3", "label": "Needs Work", "points": 10.0, "description": "Missing key sections"},
+                ]},
+                {"id": "fr-c2", "description": "Technical writing quality", "points": 15.0, "ratings": [
+                    {"id": "fr-c2-r1", "label": "Excellent", "points": 15.0, "description": "Professional formatting, proper citations, clear technical language"},
+                    {"id": "fr-c2-r2", "label": "Good", "points": 10.0, "description": "Generally well-written with minor issues"},
+                    {"id": "fr-c2-r3", "label": "Needs Work", "points": 5.0, "description": "Significant writing or formatting issues"},
+                ]},
+                {"id": "fr-c3", "description": "Visual aids and figures", "points": 10.0, "ratings": [
+                    {"id": "fr-c3-r1", "label": "Excellent", "points": 10.0, "description": "Clear, labeled figures that support the narrative"},
+                    {"id": "fr-c3-r2", "label": "Needs Work", "points": 5.0, "description": "Figures present but unlabeled or unclear"},
+                ]},
+                {"id": "fr-c4", "description": "References and citations", "points": 5.0, "ratings": [
+                    {"id": "fr-c4-r1", "label": "Complete", "points": 5.0, "description": "All sources properly cited"},
+                    {"id": "fr-c4-r2", "label": "Incomplete", "points": 2.0, "description": "Missing or inconsistent citations"},
+                ]},
+            ]),
+        },
+    ]
+
+    for r in rubrics:
+        h = content_hash(r["criteria_json"])
+        conn.execute(
+            """INSERT INTO rubrics (id, title, points_possible, criteria_json,
+               assignment_id, content_hash, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (r["id"], r["title"], r["points_possible"], r["criteria_json"],
+             r["assignment_id"], h, now, now),
+        )
+
+    # Also create rubric nodes in the nodes table for graph/audit visibility
+    rubric_nodes = [
+        {
+            "id": "rubric-peer-review",
+            "title": "Peer Review Rubric",
+            "week": 9,
+            "module": "Module 5: Iteration",
+            "description": "Standard rubric for all peer review assignments. 4 criteria: specificity (15pts), tone (10pts), coverage (10pts), suggestions (15pts).",
+        },
+        {
+            "id": "rubric-final-report",
+            "title": "Final Report Rubric",
+            "week": 15,
+            "module": "Module 7: Final Deliverables",
+            "description": "Rubric for the final design report. 4 criteria: completeness (25pts), writing (15pts), visuals (10pts), references (5pts).",
+        },
+    ]
+
+    for rn in rubric_nodes:
+        h = content_hash(rn.get("description", ""))
+        conn.execute(
+            """INSERT INTO nodes (id, type, title, week, module, description,
+               source, status, content_hash, created_at, updated_at)
+               VALUES (?, 'rubric', ?, ?, ?, ?, 'seed', 'unaudited', ?, ?, ?)""",
+            (rn["id"], rn["title"], rn["week"], rn["module"], rn["description"], h, now, now),
+        )
 
     # =========================================================================
     # NODES — 15 Assignments
@@ -47,8 +143,10 @@ def seed() -> None:
             "week": 1,
             "module": "Module 1: Foundations",
             "module_order": 1,
-            "instructions": "Set up your engineering notebook using the provided template. Include a table of contents, date each entry, and write in pen. Your notebook will be checked weekly throughout the semester.",
-            "rubric_text": "Notebook organization (10pts) | Table of contents present (5pts) | Date formatting correct (5pts) | Pen usage (5pts)",
+            "description": "Set up your engineering notebook using the provided template. Include a table of contents, date each entry, and write in pen. Your notebook will be checked weekly throughout the semester.",
+            "points_possible": 25.0,
+            "submission_types": ["online_upload"],
+            "rubric_id": None,
             "status": "ok",
         },
         {
@@ -57,8 +155,10 @@ def seed() -> None:
             "week": 2,
             "module": "Module 1: Foundations",
             "module_order": 2,
-            "instructions": "With your team, create a team charter that defines roles, responsibilities, communication norms, and conflict resolution procedures. Submit as a single PDF.",
-            "rubric_text": "Roles defined (10pts) | Communication norms (10pts) | Conflict resolution (10pts) | Professional formatting (5pts)",
+            "description": "With your team, create a team charter that defines roles, responsibilities, communication norms, and conflict resolution procedures. Submit as a single PDF.",
+            "points_possible": 35.0,
+            "submission_types": ["online_upload"],
+            "rubric_id": None,
             "status": "ok",
         },
         {
@@ -67,8 +167,10 @@ def seed() -> None:
             "week": 3,
             "module": "Module 2: Problem Definition",
             "module_order": 1,
-            "instructions": "Write a problem statement for your team's design project. Identify at least 3 stakeholders and describe their needs. Use the template provided in the course files.",
-            "rubric_text": "Problem statement clarity (15pts) | Stakeholder identification (15pts) | Needs analysis depth (10pts) | Template usage (5pts)",
+            "description": "Write a problem statement for your team's design project. Identify at least 3 stakeholders and describe their needs. Use the template provided in the course files.",
+            "points_possible": 45.0,
+            "submission_types": ["online_upload"],
+            "rubric_id": None,
             "status": "warn",
         },
         {
@@ -77,8 +179,10 @@ def seed() -> None:
             "week": 4,
             "module": "Module 2: Problem Definition",
             "module_order": 2,
-            "instructions": "Using your problem statement from Week 3, develop a full requirements document. Include functional requirements, non-functional requirements, and constraints. Reference your stakeholder analysis.",
-            "rubric_text": "Functional requirements (15pts) | Non-functional requirements (10pts) | Constraints identified (10pts) | Traceability to stakeholders (10pts)",
+            "description": "Using your problem statement from Week 3, develop a full requirements document. Include functional requirements, non-functional requirements, and constraints. Reference your stakeholder analysis.",
+            "points_possible": 45.0,
+            "submission_types": ["online_upload"],
+            "rubric_id": None,
             "status": "ok",
         },
         {
@@ -87,8 +191,10 @@ def seed() -> None:
             "week": 5,
             "module": "Module 3: Research & Data",
             "module_order": 1,
-            "instructions": "Create a data collection plan for your project. Identify what data you need, how you'll collect it, and how you'll organize it. Submit your plan and any survey instruments.",
-            "rubric_text": "Data needs identified (10pts) | Collection methods (10pts) | Organization plan (10pts) | Survey quality (10pts)",
+            "description": "Create a data collection plan for your project. Identify what data you need, how you'll collect it, and how you'll organize it. Submit your plan and any survey instruments.",
+            "points_possible": 40.0,
+            "submission_types": ["online_upload", "online_text_entry"],
+            "rubric_id": None,
             "status": "warn",
         },
         {
@@ -97,8 +203,10 @@ def seed() -> None:
             "week": 6,
             "module": "Module 3: Research & Data",
             "module_order": 2,
-            "instructions": "Analyze the data you collected. Create at least 3 visualizations (charts, graphs, or tables) that support your design decisions. Submit your analysis.",
-            "rubric_text": "Analysis rigor (15pts) | Visualization quality (15pts) | Stakeholder analysis connection (10pts) | Conclusions drawn (10pts)",
+            "description": "Analyze the data you collected. Create at least 3 visualizations (charts, graphs, or tables) that support your design decisions. Submit your analysis.",
+            "points_possible": 50.0,
+            "submission_types": ["online_upload"],
+            "rubric_id": None,
             "status": "gap",
         },
         {
@@ -107,8 +215,10 @@ def seed() -> None:
             "week": 7,
             "module": "Module 4: Design",
             "module_order": 1,
-            "instructions": "Generate at least 10 design concepts using brainstorming techniques covered in lecture. Document each concept with a sketch and brief description. Use your engineering notebook.",
-            "rubric_text": "Number of concepts (10pts) | Sketch quality (10pts) | Description clarity (10pts) | Creativity (10pts)",
+            "description": "Generate at least 10 design concepts using brainstorming techniques covered in lecture. Document each concept with a sketch and brief description. Use your engineering notebook.",
+            "points_possible": 40.0,
+            "submission_types": ["online_upload"],
+            "rubric_id": None,
             "status": "ok",
         },
         {
@@ -117,8 +227,10 @@ def seed() -> None:
             "week": 8,
             "module": "Module 4: Design",
             "module_order": 2,
-            "instructions": "Create a decision matrix to evaluate your top 5 concepts. Weight criteria based on your requirements document. Select your final concept and justify your choice.",
-            "rubric_text": "Matrix completeness (15pts) | Criteria weighting (10pts) | Justification quality (15pts) | Requirements traceability (10pts)",
+            "description": "Create a decision matrix to evaluate your top 5 concepts. Weight criteria based on your requirements document. Select your final concept and justify your choice.",
+            "points_possible": 50.0,
+            "submission_types": ["online_upload"],
+            "rubric_id": None,
             "status": "ok",
         },
         {
@@ -127,8 +239,10 @@ def seed() -> None:
             "week": 9,
             "module": "Module 5: Iteration",
             "module_order": 1,
-            "instructions": "Review two other teams' concept selection reports. Provide constructive feedback on their decision matrix and concept justification. Use the peer review form.",
-            "rubric_text": "Feedback specificity (15pts) | Constructive tone (10pts) | Coverage of all sections (10pts) | Actionable suggestions (15pts)",
+            "description": "Review two other teams' concept selection reports. Provide constructive feedback on their decision matrix and concept justification. Use the peer review form.",
+            "points_possible": 50.0,
+            "submission_types": ["online_text_entry"],
+            "rubric_id": "rubric-peer-review",
             "status": "gap",
         },
         {
@@ -137,8 +251,10 @@ def seed() -> None:
             "week": 10,
             "module": "Module 5: Iteration",
             "module_order": 2,
-            "instructions": "Build a first prototype of your selected concept. Document the build process in your engineering notebook. Submit photos and a brief description of materials used.",
-            "rubric_text": "Prototype functionality (20pts) | Documentation quality (10pts) | Materials list (5pts) | Build process photos (5pts)",
+            "description": "Build a first prototype of your selected concept. Document the build process in your engineering notebook. Submit photos and a brief description of materials used.",
+            "points_possible": 40.0,
+            "submission_types": ["online_upload"],
+            "rubric_id": None,
             "status": "warn",
         },
         {
@@ -147,8 +263,10 @@ def seed() -> None:
             "week": 11,
             "module": "Module 5: Iteration",
             "module_order": 3,
-            "instructions": "Based on feedback from Peer Review 1 and your own testing, iterate on your prototype. Document what changed and why. Apply the iteration methodology.",
-            "rubric_text": "Changes documented (15pts) | Rationale for changes (15pts) | Iteration methodology applied (10pts) | Improvement demonstrated (10pts)",
+            "description": "Based on feedback from Peer Review 1 and your own testing, iterate on your prototype. Document what changed and why. Apply the iteration methodology.",
+            "points_possible": 50.0,
+            "submission_types": ["online_upload"],
+            "rubric_id": None,
             "status": "gap",
         },
         {
@@ -157,8 +275,10 @@ def seed() -> None:
             "week": 12,
             "module": "Module 6: Communication",
             "module_order": 1,
-            "instructions": "Review two other teams' prototype v2. Evaluate functionality, documentation, and iteration quality. Provide written feedback.",
-            "rubric_text": "Evaluation thoroughness (15pts) | Feedback quality (15pts) | Comparison to v1 (10pts) | Suggestions for final (10pts)",
+            "description": "Review two other teams' prototype v2. Evaluate functionality, documentation, and iteration quality. Provide written feedback.",
+            "points_possible": 50.0,
+            "submission_types": ["online_text_entry"],
+            "rubric_id": "rubric-peer-review",
             "status": "ok",
         },
         {
@@ -167,8 +287,10 @@ def seed() -> None:
             "week": 13,
             "module": "Module 6: Communication",
             "module_order": 2,
-            "instructions": "Submit a draft of your final design report. Include all sections: problem statement, requirements, research, design process, prototype evolution, and recommendations. Use the report template.",
-            "rubric_text": "Completeness (20pts) | Technical writing quality (15pts) | Visual aids (10pts) | References (5pts)",
+            "description": "Submit a draft of your final design report. Include all sections: problem statement, requirements, research, design process, prototype evolution, and recommendations. Use the report template.",
+            "points_possible": 50.0,
+            "submission_types": ["online_upload"],
+            "rubric_id": "rubric-final-report",
             "status": "warn",
         },
         {
@@ -177,8 +299,10 @@ def seed() -> None:
             "week": 14,
             "module": "Module 7: Final Deliverables",
             "module_order": 1,
-            "instructions": "Deliver a 10-minute team presentation covering your entire design project. All team members must speak. Include a live demo or video of your prototype.",
-            "rubric_text": "Content coverage (20pts) | Delivery quality (15pts) | Visual aids (10pts) | Demo/video (10pts) | Q&A handling (5pts)",
+            "description": "Deliver a 10-minute team presentation covering your entire design project. All team members must speak. Include a live demo or video of your prototype.",
+            "points_possible": 60.0,
+            "submission_types": ["online_upload"],
+            "rubric_id": None,
             "status": "ok",
         },
         {
@@ -187,20 +311,25 @@ def seed() -> None:
             "week": 15,
             "module": "Module 7: Final Deliverables",
             "module_order": 2,
-            "instructions": "Submit your final design report incorporating feedback from the draft review. Also submit an individual reflection (1-2 pages) on your learning throughout the course.",
-            "rubric_text": "Report completeness (25pts) | Incorporation of feedback (15pts) | Individual reflection depth (10pts) | Professional formatting (5pts)",
+            "description": "Submit your final design report incorporating feedback from the draft review. Also submit an individual reflection (1-2 pages) on your learning throughout the course.",
+            "points_possible": 55.0,
+            "submission_types": ["online_upload"],
+            "rubric_id": "rubric-final-report",
             "status": "ok",
         },
     ]
 
     for a in assignments:
-        h = content_hash(a.get("instructions", ""), a.get("rubric_text", ""))
+        h = content_hash(a.get("description", ""), a.get("rubric_id", "") or "")
+        sub_types = json.dumps(a["submission_types"]) if a["submission_types"] else None
         conn.execute(
             """INSERT INTO nodes (id, type, title, week, module, module_order,
-               instructions, rubric_text, source, status, content_hash, created_at, updated_at)
-               VALUES (?, 'assignment', ?, ?, ?, ?, ?, ?, 'seed', ?, ?, ?, ?)""",
+               description, points_possible, submission_types, rubric_id,
+               source, status, content_hash, created_at, updated_at)
+               VALUES (?, 'assignment', ?, ?, ?, ?, ?, ?, ?, ?, 'seed', ?, ?, ?, ?)""",
             (a["id"], a["title"], a["week"], a["module"], a["module_order"],
-             a["instructions"], a["rubric_text"], a["status"], h, now, now),
+             a["description"], a["points_possible"], sub_types, a["rubric_id"],
+             a["status"], h, now, now),
         )
 
     # =========================================================================
@@ -241,35 +370,6 @@ def seed() -> None:
                VALUES (?, 'page', ?, ?, ?, ?, ?, 'seed', 'unaudited', ?, ?, ?)""",
             (p["id"], p["title"], p["week"], p["module"], p["module_order"],
              p["description"], h, now, now),
-        )
-
-    # =========================================================================
-    # NODES — 2 Rubrics (standalone rubric nodes)
-    # =========================================================================
-    rubrics = [
-        {
-            "id": "rubric-peer-review",
-            "title": "Peer Review Rubric",
-            "week": 9,
-            "module": "Module 5: Iteration",
-            "description": "Standard rubric for all peer review assignments. Criteria: specificity of feedback (30%), constructive tone (20%), coverage (20%), actionable suggestions (30%).",
-        },
-        {
-            "id": "rubric-final-report",
-            "title": "Final Report Rubric",
-            "week": 15,
-            "module": "Module 7: Final Deliverables",
-            "description": "Rubric for the final design report. Weighted heavily toward technical completeness and professional writing quality.",
-        },
-    ]
-
-    for r in rubrics:
-        h = content_hash(r.get("description", ""))
-        conn.execute(
-            """INSERT INTO nodes (id, type, title, week, module, description,
-               source, status, content_hash, created_at, updated_at)
-               VALUES (?, 'rubric', ?, ?, ?, ?, 'seed', 'unaudited', ?, ?, ?)""",
-            (r["id"], r["title"], r["week"], r["module"], r["description"], h, now, now),
         )
 
     # =========================================================================
@@ -342,8 +442,8 @@ def seed() -> None:
             "severity": "gap",
             "finding_type": "rubric_mismatch",
             "title": "Rubric criterion 'stakeholder analysis connection' not in instructions",
-            "body": "The rubric awards 10 points for 'Stakeholder analysis connection' but the assignment instructions never mention stakeholders or ask students to connect their data analysis back to stakeholder needs identified in Week 3.",
-            "evidence": "Rubric: 'Stakeholder analysis connection (10pts)' — Instructions mention only 'Analyze the data you collected' with no stakeholder reference.",
+            "body": "The rubric awards 10 points for 'Stakeholder analysis connection' but the assignment description never mentions stakeholders or asks students to connect their data analysis back to stakeholder needs identified in Week 3.",
+            "evidence": "Rubric: 'Stakeholder analysis connection (10pts)' — Description mentions only 'Analyze the data you collected' with no stakeholder reference.",
             "pass_number": 1,
             "linked_node": "assign-03",
         },
@@ -353,7 +453,7 @@ def seed() -> None:
             "finding_type": "clarity",
             "title": "No specification for visualization tools or formats",
             "body": "Students are told to 'create at least 3 visualizations' but no guidance is given on acceptable tools (Excel, Python, hand-drawn), formats (PNG, embedded, printed), or what makes a visualization 'quality' per the rubric.",
-            "evidence": "Instructions: 'Create at least 3 visualizations (charts, graphs, or tables)' — no tool or format specified.",
+            "evidence": "Description: 'Create at least 3 visualizations (charts, graphs, or tables)' — no tool or format specified.",
             "pass_number": 1,
             "linked_node": None,
         },
@@ -363,7 +463,7 @@ def seed() -> None:
             "finding_type": "orphan",
             "title": "No prior instruction on giving peer feedback",
             "body": "Peer Review 1 (Week 9) asks students to 'provide constructive feedback' and use a 'peer review form' but the peer review guide page exists at Week 8 with no explicit link from this assignment. Students may not know it exists.",
-            "evidence": "Instructions: 'Provide constructive feedback on their decision matrix' — no reference to the peer review guide or any training on feedback techniques.",
+            "evidence": "Description: 'Provide constructive feedback on their decision matrix' — no reference to the peer review guide or any training on feedback techniques.",
             "pass_number": 1,
             "linked_node": "page-peer-review-guide",
         },
@@ -382,8 +482,8 @@ def seed() -> None:
             "severity": "warn",
             "finding_type": "dependency_gap",
             "title": "Implicit dependency on Peer Review 1 feedback not stated",
-            "body": "Instructions say 'Based on feedback from Peer Review 1' but Peer Review 1 (Week 9) reviews concept selection reports, not prototypes. The feedback from PR1 may not be directly applicable to prototype iteration.",
-            "evidence": "Instructions: 'Based on feedback from Peer Review 1 and your own testing, iterate on your prototype.'",
+            "body": "Description says 'Based on feedback from Peer Review 1' but Peer Review 1 (Week 9) reviews concept selection reports, not prototypes. The feedback from PR1 may not be directly applicable to prototype iteration.",
+            "evidence": "Description: 'Based on feedback from Peer Review 1 and your own testing, iterate on your prototype.'",
             "pass_number": 2,
             "linked_node": "assign-09",
         },
@@ -421,10 +521,9 @@ def seed() -> None:
 
     for f in findings:
         fid = str(uuid.uuid4())[:8]
-        node_hash = content_hash(
-            next(a["instructions"] for a in assignments if a["id"] == f["assignment_id"]),
-            next((a.get("rubric_text", "") for a in assignments if a["id"] == f["assignment_id"]), ""),
-        )
+        node_desc = next(a["description"] for a in assignments if a["id"] == f["assignment_id"])
+        node_rubric_id = next((a.get("rubric_id", "") or "" for a in assignments if a["id"] == f["assignment_id"]), "")
+        node_hash = content_hash(node_desc, node_rubric_id)
         conn.execute(
             """INSERT INTO findings (id, assignment_id, audit_run_id, severity, finding_type,
                title, body, linked_node, evidence, pass_number, status, content_hash_at_creation, created_at)
@@ -472,7 +571,7 @@ def seed() -> None:
 
     # Print summary
     conn = sqlite3.connect(str(DB_PATH))
-    for table in ["nodes", "node_links", "edges", "findings", "audit_runs", "ingest_log"]:
+    for table in ["nodes", "rubrics", "node_links", "edges", "findings", "audit_runs", "ingest_log"]:
         count = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
         print(f"  {table}: {count} rows")
     conn.close()

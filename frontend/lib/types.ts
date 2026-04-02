@@ -23,7 +23,35 @@ export type FindingType =
   | "curriculum_gap"
   | "broken_file_link";
 
-// --- Models ---
+// --- Rubric Models ---
+
+export interface RubricRating {
+  id: string;
+  label: string;
+  points: number;
+  description: string | null;
+}
+
+export interface RubricCriterion {
+  id: string;
+  description: string;
+  points: number;
+  ratings: RubricRating[];
+}
+
+export interface Rubric {
+  id: string;
+  canvas_id: string | null;
+  title: string;
+  points_possible: number | null;
+  criteria: RubricCriterion[];
+  assignment_id: string | null;
+  content_hash: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// --- Node Models ---
 
 export interface CourseNode {
   id: string;
@@ -33,8 +61,9 @@ export interface CourseNode {
   module: string | null;
   module_order: number | null;
   description: string | null;
-  instructions: string | null;
-  rubric_text: string | null;
+  points_possible: number | null;
+  submission_types: string[] | null;
+  rubric_id: string | null;
   file_content: string | null;
   file_path: string | null;
   canvas_url: string | null;
@@ -63,6 +92,8 @@ export interface NodeLink {
   link_type: string;
 }
 
+// --- Finding Models ---
+
 export interface Finding {
   id: string;
   assignment_id: string;
@@ -81,6 +112,8 @@ export interface Finding {
   resolved_at: string | null;
 }
 
+// --- Graph Models ---
+
 export interface GraphEdge {
   source: string;
   target: string;
@@ -97,6 +130,8 @@ export interface GraphState {
   edges: GraphEdge[];
   flags: CourseNodeSummary[];
 }
+
+// --- Audit Models ---
 
 export interface AuditRun {
   id: string;

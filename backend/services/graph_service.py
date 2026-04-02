@@ -42,7 +42,7 @@ async def list_edges(status: str | None = None) -> list[GraphEdge]:
         params.append(status)
     cursor = await db.execute(query, params)
     rows = await cursor.fetchall()
-    return [GraphEdge(**dict(r)) for r in rows]
+    return [GraphEdge.model_validate(dict(r), strict=False) for r in rows]
 
 
 async def get_neighbors(node_id: str) -> dict[str, list[GraphEdge]]:
@@ -52,13 +52,13 @@ async def get_neighbors(node_id: str) -> dict[str, list[GraphEdge]]:
         "SELECT * FROM edges WHERE source = ? AND status = 'active'",
         (node_id,),
     )
-    downstream = [GraphEdge(**dict(r)) for r in await cursor.fetchall()]
+    downstream = [GraphEdge.model_validate(dict(r), strict=False) for r in await cursor.fetchall()]
 
     cursor = await db.execute(
         "SELECT * FROM edges WHERE target = ? AND status = 'active'",
         (node_id,),
     )
-    upstream = [GraphEdge(**dict(r)) for r in await cursor.fetchall()]
+    upstream = [GraphEdge.model_validate(dict(r), strict=False) for r in await cursor.fetchall()]
 
     return {"upstream": upstream, "downstream": downstream}
 

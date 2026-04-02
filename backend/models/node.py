@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from enum import StrEnum
 
@@ -25,6 +26,24 @@ class NodeStatus(StrEnum):
     UNAUDITED = "unaudited"
 
 
+class RubricRating(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    id: str
+    label: str
+    points: float
+    description: str | None = None
+
+
+class RubricCriterion(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    id: str
+    description: str
+    points: float
+    ratings: list[RubricRating] = Field(default_factory=list)
+
+
 class CourseNode(BaseModel):
     model_config = ConfigDict(strict=True)
 
@@ -35,8 +54,9 @@ class CourseNode(BaseModel):
     module: str | None = None
     module_order: int | None = None
     description: str | None = None
-    instructions: str | None = None
-    rubric_text: str | None = None
+    points_possible: float | None = None
+    submission_types: list[str] | None = None
+    rubric_id: str | None = None
     file_content: str | None = None
     file_path: str | None = None
     canvas_url: str | None = None
@@ -48,13 +68,26 @@ class CourseNode(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
 
+    def serialize_submission_types(self) -> str | None:
+        """Serialize submission_types list to JSON string for SQLite storage."""
+        if self.submission_types is None:
+            return None
+        return json.dumps(self.submission_types)
+
+    @staticmethod
+    def parse_submission_types(raw: str | None) -> list[str] | None:
+        """Parse JSON string from SQLite back to list."""
+        if raw is None:
+            return None
+        return json.loads(raw)
+
 
 class NodeLink(BaseModel):
     model_config = ConfigDict(strict=True)
 
     source_id: str
     target_id: str
-    link_type: str  # "file", "page", "assignment"
+    link_type: str  # "file", "page", "assignment", "external"
 
 
 class CourseNodeSummary(BaseModel):

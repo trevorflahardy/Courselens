@@ -19,7 +19,7 @@ See APP.md for vision, ARCHITECTURE.md for technical design, PLAN.md for impleme
 ```
 backend/          Python backend (FastAPI + services + models)
 frontend/         Next.js dashboard
-mcp/              Custom Audit MCP server (FastMCP)
+audit_mcp/        Custom Audit MCP server (FastMCP) — named to avoid shadowing pip `mcp` package
 data/             SQLite DB, ChromaDB, downloaded files
 scripts/          Setup, seed, and utility scripts
 tests/            pytest (backend), vitest (frontend), playwright (e2e)
@@ -30,6 +30,7 @@ tests/            pytest (backend), vitest (frontend), playwright (e2e)
 
 ### Python
 - All models use Pydantic v2 strict mode (`model_config = {"strict": True}`)
+- When hydrating models from SQLite rows, use `Model.model_validate(dict(row), strict=False)` to allow str→StrEnum/datetime coercion
 - Async everywhere: aiosqlite for DB, async FastAPI routes
 - Line length: 100 chars (ruff)
 - Type hints required on all public functions
@@ -50,7 +51,7 @@ tests/            pytest (backend), vitest (frontend), playwright (e2e)
 
 ## MCP Tool Namespaces
 
-### Audit MCP (`mcp/audit_mcp.py`)
+### Audit MCP (`audit_mcp/audit_mcp.py`)
 - `nodes_*` — Course node CRUD (read, write/upsert, list, read_many, link, get_stale)
 - `graph_*` — Dependency graph (add_edge, get_neighbors, get_flags, mark_stale)
 - `emit_*` — Finding emission (emit_finding, emit_resolve_stale)

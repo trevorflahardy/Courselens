@@ -31,7 +31,7 @@ test:
 
 # Run linters
 lint:
-	. .venv/bin/activate && ruff check backend/ scripts/ mcp/ tests/
+	. .venv/bin/activate && ruff check backend/ scripts/ audit_mcp/ tests/
 	cd frontend && bun run lint
 
 # Type checking

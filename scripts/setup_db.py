@@ -19,8 +19,9 @@ CREATE TABLE IF NOT EXISTS nodes (
     module          TEXT,
     module_order    INTEGER,
     description     TEXT,
-    instructions    TEXT,
-    rubric_text     TEXT,
+    points_possible REAL,
+    submission_types TEXT,  -- JSON array of strings
+    rubric_id       TEXT,
     file_content    TEXT,
     file_path       TEXT,
     canvas_url      TEXT,
@@ -37,11 +38,25 @@ CREATE INDEX IF NOT EXISTS idx_nodes_week ON nodes(week);
 CREATE INDEX IF NOT EXISTS idx_nodes_status ON nodes(status);
 CREATE INDEX IF NOT EXISTS idx_nodes_content_hash ON nodes(content_hash);
 
--- Node-to-node references (file links, page links, assignment links)
+-- Structured rubric data (criteria -> ratings hierarchy)
+CREATE TABLE IF NOT EXISTS rubrics (
+    id              TEXT PRIMARY KEY,
+    canvas_id       TEXT,
+    title           TEXT NOT NULL,
+    points_possible REAL,
+    criteria_json   TEXT NOT NULL,  -- JSON array of {id, description, points, ratings[]}
+    assignment_id   TEXT,
+    content_hash    TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_rubrics_assignment ON rubrics(assignment_id);
+
+-- Node-to-node references (file links, page links, assignment links, external links)
 CREATE TABLE IF NOT EXISTS node_links (
     source_id   TEXT NOT NULL REFERENCES nodes(id),
     target_id   TEXT NOT NULL REFERENCES nodes(id),
-    link_type   TEXT NOT NULL CHECK(link_type IN ('file','page','assignment')),
+    link_type   TEXT NOT NULL CHECK(link_type IN ('file','page','assignment','external')),
     PRIMARY KEY (source_id, target_id, link_type)
 );
 

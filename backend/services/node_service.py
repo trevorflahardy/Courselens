@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import datetime
 
 from backend.db import get_db
@@ -10,12 +11,18 @@ from backend.models.node import CourseNode, CourseNodeSummary, NodeLink
 
 
 def compute_content_hash(
-    instructions: str | None = None,
-    rubric_text: str | None = None,
     description: str | None = None,
+    rubric_id: str | None = None,
 ) -> str:
-    combined = f"{instructions or ''}{rubric_text or ''}{description or ''}"
+    combined = f"{description or ''}{rubric_id or ''}"
     return hashlib.sha256(combined.encode()).hexdigest()[:16]
+
+
+def _row_to_node(row: dict[str, object]) -> CourseNode:
+    """Convert a SQLite row dict to a CourseNode, deserializing JSON fields."""
+    data = dict(row)
+    data["submission_types"] = CourseNode.parse_submission_types(data.get("submission_types"))
+    return CourseNode.model_validate(data, strict=False)
 
 
 async def get_node(node_id: str) -> CourseNode | None:
@@ -24,7 +31,7 @@ async def get_node(node_id: str) -> CourseNode | None:
     row = await cursor.fetchone()
     if row is None:
         return None
-    return CourseNode(**dict(row))
+    return _row_to_node(dict(row))
 
 
 async def list_nodes(
@@ -49,7 +56,15 @@ async def list_nodes(
     query += " ORDER BY week ASC NULLS LAST, module_order ASC"
     cursor = await db.execute(query, params)
     rows = await cursor.fetchall()
-    return [CourseNodeSummary(**dict(r)) for r in rows]
+    return [CourseNodeSummary.model_validate(dict(r), strict=False) for r in rows]
+
+
+def _serialize_for_db(data: dict[str, object]) -> dict[str, object]:
+    """Serialize Python types to SQLite-compatible values."""
+    out = dict(data)
+    if "submission_types" in out and isinstance(out["submission_types"], list):
+        out["submission_types"] = json.dumps(out["submission_types"])
+    return out
 
 
 async def upsert_node(node_id: str, data: dict[str, object]) -> CourseNode:
@@ -68,13 +83,13 @@ async def upsert_node(node_id: str, data: dict[str, object]) -> CourseNode:
         merged = existing.model_dump()
         merged.update(update_fields)
         update_fields["content_hash"] = compute_content_hash(
-            merged.get("instructions"),
-            merged.get("rubric_text"),
             merged.get("description"),
+            merged.get("rubric_id"),
         )
 
-        set_clause = ", ".join(f"{k} = ?" for k in update_fields)
-        values = list(update_fields.values()) + [node_id]
+        db_fields = _serialize_for_db(update_fields)
+        set_clause = ", ".join(f"{k} = ?" for k in db_fields)
+        values = list(db_fields.values()) + [node_id]
         await db.execute(
             f"UPDATE nodes SET {set_clause} WHERE id = ?",  # noqa: S608
             values,
@@ -87,16 +102,16 @@ async def upsert_node(node_id: str, data: dict[str, object]) -> CourseNode:
     data.setdefault("created_at", now)
     data["updated_at"] = now
     data["content_hash"] = compute_content_hash(
-        data.get("instructions"),
-        data.get("rubric_text"),
         data.get("description"),
+        data.get("rubric_id"),
     )
 
-    columns = ", ".join(data.keys())
-    placeholders = ", ".join("?" for _ in data)
+    db_data = _serialize_for_db(data)
+    columns = ", ".join(db_data.keys())
+    placeholders = ", ".join("?" for _ in db_data)
     await db.execute(
         f"INSERT INTO nodes ({columns}) VALUES ({placeholders})",  # noqa: S608
-        list(data.values()),
+        list(db_data.values()),
     )
     await db.commit()
     return (await get_node(node_id))  # type: ignore[return-value]
@@ -112,7 +127,7 @@ async def get_nodes_many(ids: list[str]) -> list[CourseNode]:
         ids,
     )
     rows = await cursor.fetchall()
-    return [CourseNode(**dict(r)) for r in rows]
+    return [_row_to_node(dict(r)) for r in rows]
 
 
 async def link_nodes(source_id: str, target_id: str, link_type: str) -> NodeLink:
@@ -132,7 +147,7 @@ async def get_node_links(node_id: str) -> list[NodeLink]:
         (node_id, node_id),
     )
     rows = await cursor.fetchall()
-    return [NodeLink(**dict(r)) for r in rows]
+    return [NodeLink.model_validate(dict(r), strict=False) for r in rows]
 
 
 async def get_stale_nodes() -> list[CourseNodeSummary]:
@@ -145,4 +160,4 @@ async def get_stale_nodes() -> list[CourseNodeSummary]:
         WHERE n.content_hash != f.content_hash_at_creation
     """)
     rows = await cursor.fetchall()
-    return [CourseNodeSummary(**dict(r)) for r in rows]
+    return [CourseNodeSummary.model_validate(dict(r), strict=False) for r in rows]
