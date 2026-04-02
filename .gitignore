@@ -11,6 +11,7 @@ dist
 build
 .next-env.d.ts
 .next.config.js
+node_modules/
 
 # Python
 __pycache__/
@@ -19,3 +20,13 @@ __pycache__/
 *.pyd
 env/
 .venv*/
+*.egg-info/
+
+# Data (generated, not tracked)
+data/audit.db
+data/audit.db-wal
+data/audit.db-shm
+data/chroma/*
+!data/chroma/.gitkeep
+data/files/*
+!data/files/.gitkeep

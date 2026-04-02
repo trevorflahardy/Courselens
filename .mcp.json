@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "audit": {
+      "command": "python",
+      "args": ["mcp/audit_mcp.py"],
+      "env": {
+        "DB_PATH": "./data/audit.db",
+        "FILES_DIR": "./data/files"
+      }
+    },
+    "chroma": {
+      "command": "uvx",
+      "args": ["chroma-mcp", "--client-type", "persistent", "--data-dir", "./data/chroma"]
+    }
+  }
+}
