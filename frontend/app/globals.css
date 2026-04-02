@@ -7,9 +7,9 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-sans);
-  --font-mono: var(--font-geist-mono);
-  --font-heading: var(--font-sans);
+  --font-sans: var(--font-geist-sans), "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+  --font-heading: var(--font-geist-sans), "Inter", ui-sans-serif, system-ui, sans-serif;
 
   /* Sidebar */
   --color-sidebar-ring: var(--sidebar-ring);
@@ -61,14 +61,14 @@
   --color-severity-info: var(--severity-info);
   --color-severity-ok: var(--severity-ok);
 
-  /* Glass effect tokens */
+  /* Surface tokens */
   --color-glass: var(--glass);
   --color-glass-border: var(--glass-border);
   --color-glass-highlight: var(--glass-highlight);
 }
 
 /* ==========================================================================
-   Dark theme (default) — Glassmorphism / Liquid Glass
+   Dark theme (default)
    ========================================================================== */
 
 :root {
@@ -76,45 +76,45 @@
   --background: oklch(0.1 0.015 260);
   --foreground: oklch(0.95 0.005 260);
 
-  /* Glass cards — translucent with blur */
-  --card: oklch(0.15 0.01 260 / 60%);
+  /* Cards — solid surfaces */
+  --card: oklch(0.14 0.01 260);
   --card-foreground: oklch(0.95 0.005 260);
-  --popover: oklch(0.14 0.015 260 / 80%);
+  --popover: oklch(0.14 0.015 260);
   --popover-foreground: oklch(0.95 0.005 260);
 
   /* Primary — vivid blue-violet accent */
   --primary: oklch(0.7 0.18 265);
   --primary-foreground: oklch(0.98 0 0);
 
-  /* Secondary — subtle frosted */
-  --secondary: oklch(0.2 0.01 260 / 50%);
+  /* Secondary */
+  --secondary: oklch(0.18 0.01 260);
   --secondary-foreground: oklch(0.9 0.005 260);
 
   /* Muted */
-  --muted: oklch(0.18 0.01 260 / 40%);
-  --muted-foreground: oklch(0.65 0.01 260);
+  --muted: oklch(0.16 0.01 260);
+  --muted-foreground: oklch(0.56 0.01 260);
 
-  /* Accent — glass highlight */
-  --accent: oklch(0.22 0.02 265 / 50%);
+  /* Accent */
+  --accent: oklch(0.18 0.015 265);
   --accent-foreground: oklch(0.95 0.005 260);
 
   /* Destructive */
   --destructive: oklch(0.65 0.22 25);
 
-  /* Borders — glass edges */
-  --border: oklch(1 0 0 / 8%);
-  --input: oklch(1 0 0 / 10%);
-  --ring: oklch(0.7 0.18 265 / 50%);
+  /* Borders */
+  --border: oklch(1 0 0 / 7%);
+  --input: oklch(1 0 0 / 8%);
+  --ring: oklch(0.7 0.18 265 / 40%);
 
   /* Radius */
   --radius: 0.75rem;
 
-  /* Sidebar — deeper glass */
-  --sidebar: oklch(0.08 0.015 260 / 80%);
+  /* Sidebar */
+  --sidebar: oklch(0.08 0.012 260);
   --sidebar-foreground: oklch(0.9 0.005 260);
   --sidebar-primary: oklch(0.7 0.18 265);
   --sidebar-primary-foreground: oklch(0.98 0 0);
-  --sidebar-accent: oklch(0.2 0.02 265 / 40%);
+  --sidebar-accent: oklch(0.16 0.015 265);
   --sidebar-accent-foreground: oklch(0.95 0.005 260);
   --sidebar-border: oklch(1 0 0 / 6%);
   --sidebar-ring: oklch(0.7 0.18 265 / 30%);
@@ -132,10 +132,10 @@
   --severity-info: oklch(0.7 0.15 250);
   --severity-ok: oklch(0.72 0.19 155);
 
-  /* Glass tokens */
-  --glass: oklch(1 0 0 / 5%);
-  --glass-border: oklch(1 0 0 / 10%);
-  --glass-highlight: oklch(1 0 0 / 3%);
+  /* Surface tokens */
+  --glass: oklch(0.14 0.01 260);
+  --glass-border: oklch(1 0 0 / 7%);
+  --glass-highlight: oklch(0.16 0.01 260);
 }
 
 /* ==========================================================================
@@ -155,42 +155,31 @@
 }
 
 /* ==========================================================================
-   Glass utilities
+   Surface utilities
    ========================================================================== */
 
 @layer utilities {
   .glass {
     background: var(--glass);
-    backdrop-filter: blur(20px) saturate(1.4);
-    -webkit-backdrop-filter: blur(20px) saturate(1.4);
     border: 1px solid var(--glass-border);
   }
 
   .glass-strong {
-    background: oklch(1 0 0 / 8%);
-    backdrop-filter: blur(32px) saturate(1.6);
-    -webkit-backdrop-filter: blur(32px) saturate(1.6);
-    border: 1px solid oklch(1 0 0 / 12%);
+    background: oklch(0.12 0.01 260);
+    border: 1px solid oklch(1 0 0 / 8%);
   }
 
   .glass-subtle {
-    background: oklch(1 0 0 / 3%);
-    backdrop-filter: blur(12px) saturate(1.2);
-    -webkit-backdrop-filter: blur(12px) saturate(1.2);
+    background: oklch(0.13 0.008 260);
     border: 1px solid oklch(1 0 0 / 5%);
   }
 
   .liquid-glow {
-    box-shadow:
-      0 0 20px oklch(0.7 0.18 265 / 8%),
-      0 0 60px oklch(0.7 0.18 265 / 4%),
-      inset 0 1px 0 oklch(1 0 0 / 5%);
+    /* intentionally empty — removed glow effect */
   }
 
   .glow-border {
-    box-shadow:
-      inset 0 1px 0 oklch(1 0 0 / 8%),
-      0 1px 2px oklch(0 0 0 / 20%);
+    /* intentionally empty — removed glow effect */
   }
 
   /* Severity badge backgrounds */

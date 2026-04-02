@@ -1,18 +1,20 @@
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-
 export default function AssignmentDetailPage() {
   return (
-    <div className="space-y-6">
-      <Card className="glass glow-border">
-        <CardHeader>
-          <CardTitle className="text-sm font-medium">Assignment Detail</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="text-sm text-muted-foreground">
-            Full assignment metadata, audit findings by pass, and rubric text will appear here.
+    <div className="space-y-6 max-w-6xl">
+      <div>
+        <h1 className="text-xl font-semibold tracking-tight">Assignment Detail</h1>
+        <p className="text-[13px] text-muted-foreground mt-1">
+          Full metadata, audit findings by pass, and rubric text.
+        </p>
+      </div>
+
+      <div className="rounded-lg border border-border bg-card px-4 py-10">
+        <div className="text-center">
+          <p className="text-[13px] text-muted-foreground">
+            Assignment details and findings will appear here after ingestion.
           </p>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
     </div>
   );
 }
