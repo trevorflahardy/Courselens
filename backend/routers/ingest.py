@@ -294,6 +294,86 @@ async def ingest_status() -> dict[str, object]:
     return _ingest_status
 
 
+@router.get("/processes")
+async def list_processes() -> list[dict[str, object]]:
+    """Return all tracked Claude subprocesses and whether they are still alive."""
+    from backend.claude_runner import _active_runs
+
+    result = []
+    for run in _active_runs.values():
+        proc = run.process
+        alive = proc is not None and proc.returncode is None
+        result.append({
+            "run_id": run.run_id,
+            "assignment_id": run.assignment_id,
+            "status": run.status,
+            "pid": proc.pid if proc else None,
+            "alive": alive,
+            "started_at": run.started_at,
+            "finished_at": run.finished_at,
+        })
+    return result
+
+
+@router.post("/dedup-files")
+async def dedup_files() -> dict[str, int]:
+    """Find file nodes whose titles are duplicates after URL-decoding, keep the best one, delete the rest."""
+    from urllib.parse import unquote_plus
+    from backend.db import get_db
+
+    db = await get_db()
+
+    cursor = await db.execute("SELECT id, title, canvas_url, week, module, updated_at FROM nodes WHERE type = 'file'")
+    rows = await cursor.fetchall()
+
+    # Group by normalized title
+    groups: dict[str, list[dict[str, object]]] = {}
+    for row in rows:
+        normalized = unquote_plus(str(row["title"] or "")).strip()
+        groups.setdefault(normalized, []).append(dict(row))
+
+    merged = 0
+    deleted = 0
+
+    for _title, nodes in groups.items():
+        if len(nodes) < 2:
+            continue
+
+        # Pick the "best" node: prefer one with canvas_url, then week, then most recently updated
+        def _score(n: dict[str, object]) -> tuple[int, int, str]:
+            return (
+                1 if n.get("canvas_url") else 0,
+                1 if n.get("week") is not None else 0,
+                str(n.get("updated_at") or ""),
+            )
+
+        nodes.sort(key=_score, reverse=True)
+        keeper_id = str(nodes[0]["id"])
+        duplicate_ids = [str(n["id"]) for n in nodes[1:]]
+
+        logger.info("Dedup: keeping %s, removing %s", keeper_id, duplicate_ids)
+
+        for dup_id in duplicate_ids:
+            # Re-point node_links
+            await db.execute("UPDATE node_links SET source_id = ? WHERE source_id = ?", (keeper_id, dup_id))
+            await db.execute("UPDATE node_links SET target_id = ? WHERE target_id = ?", (keeper_id, dup_id))
+            # Re-point findings and audit_runs
+            await db.execute("UPDATE findings SET assignment_id = ? WHERE assignment_id = ?", (keeper_id, dup_id))
+            await db.execute("UPDATE audit_runs SET assignment_id = ? WHERE assignment_id = ?", (keeper_id, dup_id))
+            # Re-point edges
+            await db.execute("UPDATE edges SET source = ? WHERE source = ?", (keeper_id, dup_id))
+            await db.execute("UPDATE edges SET target = ? WHERE target = ?", (keeper_id, dup_id))
+            # Delete duplicate (node_links with both ends == keeper become duplicates; ignore constraint)
+            await db.execute("DELETE FROM node_links WHERE source_id = target_id")
+            await db.execute("DELETE FROM nodes WHERE id = ?", (dup_id,))
+            deleted += 1
+
+        merged += 1
+
+    await db.commit()
+    return {"groups_merged": merged, "nodes_deleted": deleted}
+
+
 @router.post("/cleanup-test-data")
 async def cleanup_test_data() -> dict[str, int]:
     """Remove demo/seed data that predates real Canvas ingestion.

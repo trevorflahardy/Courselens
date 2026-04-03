@@ -5,6 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime
+from urllib.parse import unquote_plus
+
+
+def _normalize_title(title: object) -> str | None:
+    """Decode URL-encoded file names so 'A+B.pdf' and 'A B.pdf' don't become duplicates."""
+    if not isinstance(title, str):
+        return None
+    return unquote_plus(title).strip()
 
 from backend.db import get_db
 from backend.models.node import CourseNode, CourseNodeSummary, NodeLink
@@ -67,8 +75,12 @@ def _serialize_for_db(data: dict[str, object]) -> dict[str, object]:
     return out
 
 
-async def upsert_node(node_id: str, data: dict[str, object]) -> CourseNode:
+async def upsert_node(node_id: str, data: dict[str, object]) -> CourseNode:  # noqa: C901
     """Insert or merge a node. Preserves existing fields not in data."""
+    # Normalize title to avoid URL-encoded duplicates ("A+B.pdf" vs "A B.pdf")
+    if "title" in data:
+        data = {**data, "title": _normalize_title(data["title"])}
+
     db = await get_db()
     now = datetime.now().isoformat()
 

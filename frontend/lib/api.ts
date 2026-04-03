@@ -116,6 +116,12 @@ export const api = {
   getIngestStatus: () =>
     request<{ status: string; stage?: string; message?: string; nodes_processed?: number; last_run?: string; feed?: string[] }>("/api/ingest/status"),
 
+  getProcesses: () =>
+    request<{ run_id: string; assignment_id: string; status: string; pid: number | null; alive: boolean; started_at: string; finished_at: string | null }[]>("/api/ingest/processes"),
+
+  dedupFiles: () =>
+    request<{ groups_merged: number; nodes_deleted: number }>("/api/ingest/dedup-files", { method: "POST" }),
+
   cleanupTestData: () =>
     request<{
       nodes_deleted: number;
