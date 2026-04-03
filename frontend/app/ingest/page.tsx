@@ -1105,7 +1105,7 @@ export default function IngestPage() {
                     size="sm"
                     onClick={async () => {
                       setClearDialogOpen(false);
-                      pushLog("extract", "Clearing all data…", "pending");
+                      pushLog("extract", "Clearing all data…", "ok");
                       try {
                         await api.clearAll();
                         pushLog("extract", "All data cleared", "ok");

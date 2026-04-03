@@ -381,12 +381,13 @@ async def clear_all() -> dict[str, int]:
 
     db = await get_db()
 
+    await db.execute("PRAGMA foreign_keys=OFF")
     counts: dict[str, int] = {}
     for table in ("findings", "audit_runs", "edges", "node_links", "files", "rubrics", "nodes", "ingest_log"):
-        cursor = await db.execute(f"DELETE FROM {table}")  # noqa: S608 — table names are literals
+        cursor = await db.execute(f"DELETE FROM {table}")  # noqa: S608
         counts[f"{table}_deleted"] = cursor.rowcount
-
     await db.commit()
+    await db.execute("PRAGMA foreign_keys=ON")
     return counts
 
 
