@@ -53,8 +53,10 @@ async def start_audit_run(
     """
     cmd = [
         "claude",
-        "-p", prompt,
-        "--output-format", "stream-json",
+        "-p",
+        prompt,
+        "--output-format",
+        "stream-json",
     ]
 
     if allowed_tools:
@@ -79,6 +81,42 @@ async def start_audit_run(
         logger.error("Claude CLI not found — is it installed and on PATH?")
 
     return state
+
+
+async def cancel_run(run_id: str) -> bool:
+    """Cancel a running Claude subprocess for a specific run ID.
+
+    Returns True when a process was found and a cancel signal was sent.
+    """
+    state = _active_runs.get(run_id)
+    if state is None or state.process is None:
+        return False
+
+    process = state.process
+    if process.returncode is not None:
+        return False
+
+    process.terminate()
+    try:
+        await asyncio.wait_for(process.wait(), timeout=2)
+    except asyncio.TimeoutError:
+        process.kill()
+        await process.wait()
+
+    state.status = "error"
+    state.finished_at = datetime.now().isoformat()
+    state.events.append({"type": "error", "message": "Run cancelled by user"})
+    return True
+
+
+async def cancel_runs_with_prefix(prefix: str) -> int:
+    """Cancel all in-flight subprocess runs whose IDs start with a prefix."""
+    run_ids = [rid for rid in _active_runs if rid == prefix or rid.startswith(prefix)]
+    cancelled = 0
+    for rid in run_ids:
+        if await cancel_run(rid):
+            cancelled += 1
+    return cancelled
 
 
 async def tail_run(run_id: str) -> AsyncGenerator[dict[str, object], None]:

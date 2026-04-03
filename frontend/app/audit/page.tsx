@@ -27,6 +27,7 @@ import {
   PlayIcon,
   LayersIcon,
   BarChart3Icon,
+  SquareIcon,
   ChevronDownIcon,
   ChevronRightIcon,
   Loader2Icon,
@@ -98,9 +99,15 @@ export default function AuditPage() {
   const [auditLoading, setAuditLoading] = useState(false);
   const [allLoading, setAllLoading] = useState(false);
   const [summaryLoading, setSummaryLoading] = useState(false);
+  const [cancelingRunId, setCancelingRunId] = useState<string | null>(null);
   const [summary, setSummary] = useState<Record<string, unknown> | null>(null);
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   // --- Data fetching ---
   const fetchData = useCallback(async () => {
@@ -193,7 +200,39 @@ export default function AuditPage() {
     }
   }
 
+  async function handleCancelRun(runId: string) {
+    setCancelingRunId(runId);
+    setError(null);
+    try {
+      await api.cancelAuditRun(runId);
+      const updated = await api.listAuditRuns();
+      setRuns(updated);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to cancel audit run");
+    } finally {
+      setCancelingRunId(null);
+    }
+  }
+
   // --- Render ---
+  if (!mounted) {
+    return (
+      <div className="space-y-6 max-w-6xl">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-xl font-semibold tracking-tight">Audit Engine</h1>
+            <p className="text-[13px] text-muted-foreground mt-1">
+              Run audits, view history, and stream live results.
+            </p>
+          </div>
+        </div>
+        <div className="glass rounded-lg p-4">
+          <p className="text-[13px] text-muted-foreground">Loading audit workspace...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6 max-w-6xl">
       {/* Header */}
@@ -350,11 +389,14 @@ export default function AuditPage() {
                 <TableHead className="text-xs text-muted-foreground text-center">Total</TableHead>
                 <TableHead className="text-xs text-muted-foreground">Started</TableHead>
                 <TableHead className="text-xs text-muted-foreground">Duration</TableHead>
+                <TableHead className="text-xs text-muted-foreground text-right">Actions</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {runs.map((run) => {
                 const assignmentNode = nodes.find((n) => n.id === run.assignment_id);
+                const isRunning = run.status === "running";
+                const isCanceling = cancelingRunId === run.id;
                 return (
                   <TableRow
                     key={run.id}
@@ -387,6 +429,27 @@ export default function AuditPage() {
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground tabular-nums">
                       {formatDuration(run.started_at, run.finished_at)}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {isRunning && (
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          disabled={isCanceling}
+                          className="h-7 px-2.5"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void handleCancelRun(run.id);
+                          }}
+                        >
+                          {isCanceling ? (
+                            <Loader2Icon className="size-3.5 animate-spin" />
+                          ) : (
+                            <SquareIcon className="size-3.5" />
+                          )}
+                          <span className="ml-1">Stop</span>
+                        </Button>
+                      )}
                     </TableCell>
                   </TableRow>
                 );

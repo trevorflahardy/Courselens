@@ -60,6 +60,14 @@ const EDGE_STYLES: Record<EdgeType, { color: string; dash: string; width: number
   gap: { color: "oklch(0.65 0.25 25 / 0.6)", dash: "6,3", width: 2 },
 };
 
+function stableNoise(input: string): number {
+  let hash = 0;
+  for (let i = 0; i < input.length; i += 1) {
+    hash = (hash * 31 + input.charCodeAt(i)) | 0;
+  }
+  return (Math.abs(hash) % 1000) / 1000;
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -203,18 +211,34 @@ export function ForceGraph({ nodes, edges, filter, onNodeClick, selectedNodeId }
     // Initial centering
     svg.call(zoom.transform, d3.zoomIdentity.translate(width / 2, height / 2).scale(0.85));
 
-    // Position nodes by week on Y axis
+    // Position nodes by week on Y axis with generous lane spacing
     const weeks = [...new Set(graphNodes.map((n) => n.week ?? 0))].sort((a, b) => a - b);
+    const minWeek = weeks[0] ?? 0;
+    const maxWeek = weeks[weeks.length - 1] ?? 15;
+    const weekCount = Math.max(1, maxWeek - minWeek);
+    const laneSpacing = Math.max(56, Math.min(96, (height * 0.92) / weekCount));
+    const laneSpan = laneSpacing * weekCount;
     const weekScale = d3
       .scaleLinear()
-      .domain([weeks[0] || 0, weeks[weeks.length - 1] || 15])
-      .range([-height * 0.35, height * 0.35]);
+      .domain([minWeek, maxWeek])
+      .range([-laneSpan / 2, laneSpan / 2]);
 
-    // Initialize positions
-    graphNodes.forEach((node) => {
-      node.x = (Math.random() - 0.5) * width * 0.6;
-      node.y = weekScale(node.week ?? 0) + (Math.random() - 0.5) * 40;
-    });
+    // Deterministic initialization by lane and stable hashed offsets.
+    const nodesByWeek = d3.group(graphNodes, (n) => n.week ?? 0);
+    for (const [, laneNodes] of nodesByWeek) {
+      const sorted = [...laneNodes].sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
+      const count = Math.max(1, sorted.length);
+      const laneWidth = Math.min(width * 0.8, 220 + count * 20);
+      const step = count === 1 ? 0 : laneWidth / (count - 1);
+
+      sorted.forEach((node, idx) => {
+        const xBase = count === 1 ? 0 : -laneWidth / 2 + step * idx;
+        const xJitter = (stableNoise(`${node.id}-x`) - 0.5) * 12;
+        const yJitter = (stableNoise(`${node.id}-y`) - 0.5) * 10;
+        node.x = xBase + xJitter;
+        node.y = weekScale(node.week ?? 0) + yJitter;
+      });
+    }
 
     // Simulation
     const simulation = d3
@@ -224,14 +248,22 @@ export function ForceGraph({ nodes, edges, filter, onNodeClick, selectedNodeId }
         d3
           .forceLink<GraphNode, GraphLink>(graphEdges)
           .id((d) => d.id)
-          .distance(80)
-          .strength(0.3)
+          .distance(90)
+          .strength(0.26)
       )
-      .force("charge", d3.forceManyBody().strength(-200).distanceMax(300))
-      .force("x", d3.forceX<GraphNode>(0).strength(0.05))
-      .force("y", d3.forceY<GraphNode>((d) => weekScale(d.week ?? 0)).strength(0.15))
-      .force("collision", d3.forceCollide<GraphNode>(25))
-      .alphaDecay(0.02);
+      .force("charge", d3.forceManyBody().strength(-140).distanceMax(260))
+      .force("x", d3.forceX<GraphNode>(0).strength(0.03))
+      .force("y", d3.forceY<GraphNode>((d) => weekScale(d.week ?? 0)).strength(0.28))
+      .force("collision", d3.forceCollide<GraphNode>(24))
+      .alpha(0.7)
+      .alphaDecay(0.06)
+      .velocityDecay(0.5);
+
+    // Pre-settle so the graph doesn't visibly jiggle on first paint.
+    simulation.stop();
+    for (let i = 0; i < 220; i += 1) {
+      simulation.tick();
+    }
 
     simulationRef.current = simulation;
 
@@ -364,7 +396,7 @@ export function ForceGraph({ nodes, edges, filter, onNodeClick, selectedNodeId }
       });
 
     // Tick
-    simulation.on("tick", () => {
+    const renderTick = () => {
       links
         .attr("x1", (d) => (d.source as GraphNode).x!)
         .attr("y1", (d) => (d.source as GraphNode).y!)
@@ -372,7 +404,9 @@ export function ForceGraph({ nodes, edges, filter, onNodeClick, selectedNodeId }
         .attr("y2", (d) => (d.target as GraphNode).y!);
 
       nodeGs.attr("transform", (d) => `translate(${d.x},${d.y})`);
-    });
+    };
+    simulation.on("tick", renderTick);
+    renderTick();
 
     // Week labels on the left
     const labelGroup = g.append("g").attr("class", "week-labels");

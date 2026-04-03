@@ -19,6 +19,7 @@ from backend.services.audit_engine import (
     run_single_audit,
     summarize_findings,
 )
+from backend.claude_runner import cancel_runs_with_prefix
 
 router = APIRouter(prefix="/api/audit", tags=["audit"])
 
@@ -57,6 +58,54 @@ async def get_run(run_id: str) -> AuditRun:
     if row is None:
         raise HTTPException(status_code=404, detail=f"Audit run '{run_id}' not found")
     return AuditRun.model_validate(dict(row), strict=False)
+
+
+@router.post("/runs/{run_id}/cancel")
+async def cancel_run(run_id: str) -> AuditRun:
+    """Cancel a running audit run and mark it as errored/cancelled."""
+    db = await get_db()
+    cursor = await db.execute("SELECT * FROM audit_runs WHERE id = ?", (run_id,))
+    row = await cursor.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Audit run '{run_id}' not found")
+
+    run = AuditRun.model_validate(dict(row), strict=False)
+    if run.status != AuditStatus.RUNNING:
+        return run
+
+    task = _audit_tasks.get(run_id)
+    if task is not None and not task.done():
+        task.cancel()
+
+    # Cancel any in-flight per-pass subprocesses linked to this run.
+    await cancel_runs_with_prefix(run_id)
+
+    progress = _audit_progress.get(run_id)
+    if progress is not None:
+        progress.status = "error"
+        progress.events.append(
+            {"type": "error", "message": "Run cancelled by user", "run_id": run_id}
+        )
+
+    finished_at = datetime.now().isoformat()
+    await db.execute(
+        """UPDATE audit_runs
+           SET status = 'error',
+               finished_at = ?,
+               error_message = ?
+           WHERE id = ?""",
+        (finished_at, "Run cancelled by user", run_id),
+    )
+    await db.commit()
+
+    # Ensure completed/cancelled tasks are no longer tracked as in-flight.
+    _audit_tasks.pop(run_id, None)
+
+    cursor = await db.execute("SELECT * FROM audit_runs WHERE id = ?", (run_id,))
+    updated = await cursor.fetchone()
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"Audit run '{run_id}' not found after cancel")
+    return AuditRun.model_validate(dict(updated), strict=False)
 
 
 @router.post("/{assignment_id}")
@@ -151,12 +200,31 @@ async def stream_audit(run_id: str) -> StreamingResponse:
             if progress:
                 for event in progress.events[seen_events:]:
                     yield _sse_event(str(event.get("type", "heartbeat")), event)
-                yield _sse_event("done", {
-                    "run_id": run_id,
-                    "total_findings": (
-                        progress.pass1_findings + progress.pass2_findings + progress.pass3_findings
-                    ),
-                })
+                if progress.status == "error":
+                    yield _sse_event(
+                        "error",
+                        {
+                            "message": "Run cancelled by user"
+                            if any(
+                                event.get("message") == "Run cancelled by user"
+                                for event in progress.events
+                            )
+                            else "Audit run failed",
+                            "run_id": run_id,
+                        },
+                    )
+                else:
+                    yield _sse_event(
+                        "done",
+                        {
+                            "run_id": run_id,
+                            "total_findings": (
+                                progress.pass1_findings
+                                + progress.pass2_findings
+                                + progress.pass3_findings
+                            ),
+                        },
+                    )
                 return
 
         # No in-flight task — check DB for completed/errored run
@@ -166,14 +234,20 @@ async def stream_audit(run_id: str) -> StreamingResponse:
         if row2:
             run = AuditRun.model_validate(dict(row2), strict=False)
             if run.status == AuditStatus.DONE:
-                yield _sse_event("done", {
-                    "run_id": run_id,
-                    "total_findings": run.total_findings,
-                })
+                yield _sse_event(
+                    "done",
+                    {
+                        "run_id": run_id,
+                        "total_findings": run.total_findings,
+                    },
+                )
             elif run.status == AuditStatus.ERROR:
-                yield _sse_event("error", {
-                    "message": run.error_message or "Unknown error",
-                })
+                yield _sse_event(
+                    "error",
+                    {
+                        "message": run.error_message or "Unknown error",
+                    },
+                )
             else:
                 yield _sse_event("heartbeat", {"message": "audit in progress"})
 

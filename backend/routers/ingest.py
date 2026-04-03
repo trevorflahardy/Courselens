@@ -96,3 +96,76 @@ async def ingest_course() -> dict[str, str]:
 async def ingest_status() -> dict[str, object]:
     """Get current ingestion status."""
     return _ingest_status
+
+
+@router.post("/cleanup-test-data")
+async def cleanup_test_data() -> dict[str, int]:
+    """Remove demo/seed data that predates real Canvas ingestion.
+
+    The cleanup targets records with source='seed' and their dependent rows.
+    """
+    from backend.db import get_db
+
+    db = await get_db()
+
+    cursor = await db.execute("SELECT id FROM nodes WHERE source = 'seed'")
+    node_rows = await cursor.fetchall()
+    node_ids = [str(row[0]) for row in node_rows]
+
+    if not node_ids:
+        return {
+            "nodes_deleted": 0,
+            "edges_deleted": 0,
+            "links_deleted": 0,
+            "findings_deleted": 0,
+            "audit_runs_deleted": 0,
+            "rubrics_deleted": 0,
+        }
+
+    placeholders = ",".join("?" for _ in node_ids)
+
+    async def _delete_count(query: str, params: tuple[object, ...]) -> int:
+        cursor_local = await db.execute(query, params)
+        return cursor_local.rowcount if cursor_local.rowcount >= 0 else 0
+
+    findings_deleted = await _delete_count(
+        f"DELETE FROM findings WHERE assignment_id IN ({placeholders})",
+        tuple(node_ids),
+    )
+
+    audit_runs_deleted = await _delete_count(
+        f"DELETE FROM audit_runs WHERE assignment_id IN ({placeholders})",
+        tuple(node_ids),
+    )
+
+    edges_deleted = await _delete_count(
+        f"DELETE FROM edges WHERE source IN ({placeholders}) OR target IN ({placeholders})",
+        tuple(node_ids + node_ids),
+    )
+
+    links_deleted = await _delete_count(
+        f"DELETE FROM node_links WHERE source_id IN ({placeholders}) OR target_id IN ({placeholders})",
+        tuple(node_ids + node_ids),
+    )
+
+    rubrics_deleted = await _delete_count(
+        "DELETE FROM rubrics WHERE id IN (SELECT rubric_id FROM nodes WHERE source = 'seed' AND rubric_id IS NOT NULL) "
+        "OR assignment_id IN (SELECT id FROM nodes WHERE source = 'seed')",
+        (),
+    )
+
+    nodes_deleted = await _delete_count(
+        f"DELETE FROM nodes WHERE id IN ({placeholders})",
+        tuple(node_ids),
+    )
+
+    await db.commit()
+
+    return {
+        "nodes_deleted": nodes_deleted,
+        "edges_deleted": edges_deleted,
+        "links_deleted": links_deleted,
+        "findings_deleted": findings_deleted,
+        "audit_runs_deleted": audit_runs_deleted,
+        "rubrics_deleted": rubrics_deleted,
+    }

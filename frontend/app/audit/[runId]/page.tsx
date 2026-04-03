@@ -7,6 +7,7 @@ import { api } from "@/lib/api";
 import { useAuditStream } from "@/hooks/useAuditStream";
 import type { AuditRun, Finding } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   ArrowLeftIcon,
   CheckCircle2Icon,
@@ -15,6 +16,7 @@ import {
   AlertCircleIcon,
   Loader2Icon,
   QuoteIcon,
+  SquareIcon,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -202,6 +204,7 @@ export default function AuditRunDetailPage() {
   const [run, setRun] = useState<AuditRun | null>(null);
   const [dbFindings, setDbFindings] = useState<Finding[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [canceling, setCanceling] = useState(false);
 
   const stream = useAuditStream();
 
@@ -248,6 +251,20 @@ export default function AuditRunDetailPage() {
       fetchRun();
     }
   }, [stream.status, fetchRun]);
+
+  const handleCancelRun = useCallback(async () => {
+    if (!run || run.status !== "running") return;
+    setCanceling(true);
+    try {
+      await api.cancelAuditRun(run.id);
+      stream.disconnect();
+      await fetchRun();
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : "Failed to cancel run");
+    } finally {
+      setCanceling(false);
+    }
+  }, [run, stream, fetchRun]);
 
   // Determine which findings to show
   const isFinished = run?.status === "done" || run?.status === "error";
@@ -318,7 +335,26 @@ export default function AuditRunDetailPage() {
           )}
         </div>
         {run && (
-          <RunStatusBadge status={run.status} />
+          <div className="flex items-center gap-2">
+            <RunStatusBadge status={run.status} />
+            {run.status === "running" && (
+              <Button
+                size="sm"
+                variant="destructive"
+                disabled={canceling}
+                onClick={() => {
+                  void handleCancelRun();
+                }}
+              >
+                {canceling ? (
+                  <Loader2Icon className="size-3.5 animate-spin" />
+                ) : (
+                  <SquareIcon className="size-3.5" />
+                )}
+                <span className="ml-1">Stop Audit</span>
+              </Button>
+            )}
+          </div>
         )}
       </div>
 

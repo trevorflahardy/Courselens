@@ -81,6 +81,9 @@ export const api = {
 
   getAuditRun: (runId: string) => request<AuditRun>(`/api/audit/runs/${runId}`),
 
+  cancelAuditRun: (runId: string) =>
+    request<AuditRun>(`/api/audit/runs/${runId}/cancel`, { method: "POST" }),
+
   startAuditAll: (batchSize = 4) =>
     request<{ total: number; completed: number; errors: string[] }>(
       `/api/audit/all?batch_size=${batchSize}`,
@@ -112,4 +115,14 @@ export const api = {
 
   getIngestStatus: () =>
     request<{ status: string; nodes_processed?: number; last_run?: string }>("/api/ingest/status"),
+
+  cleanupTestData: () =>
+    request<{
+      nodes_deleted: number;
+      edges_deleted: number;
+      links_deleted: number;
+      findings_deleted: number;
+      audit_runs_deleted: number;
+      rubrics_deleted: number;
+    }>("/api/ingest/cleanup-test-data", { method: "POST" }),
 };

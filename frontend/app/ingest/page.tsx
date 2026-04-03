@@ -186,6 +186,7 @@ export default function IngestPage() {
   /* ---- Graph rebuild state ---- */
   const [rebuildingGraph, setRebuildingGraph] = useState(false);
   const [graphResult, setGraphResult] = useState<GraphResult | null>(null);
+  const [cleanupLoading, setCleanupLoading] = useState(false);
 
   /* ---- Clear dialog ---- */
   const [clearDialogOpen, setClearDialogOpen] = useState(false);
@@ -357,6 +358,26 @@ export default function IngestPage() {
       setRebuildingGraph(false);
     }
   }, [pushLog]);
+
+  const handleCleanupTestData = useCallback(async () => {
+    setCleanupLoading(true);
+    setAssignError(null);
+    try {
+      const result = await api.cleanupTestData();
+      pushLog("extract", `Removed ${result.nodes_deleted} seeded nodes`, "ok");
+      await refreshNodeCounts();
+      await refreshAssignableData();
+
+      const graph = await api.getGraph();
+      setTotalEdges(graph.edges.length);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to remove seeded data";
+      setAssignError(message);
+      pushLog("extract", `Seed cleanup failed: ${message}`, "error");
+    } finally {
+      setCleanupLoading(false);
+    }
+  }, [pushLog, refreshNodeCounts, refreshAssignableData]);
 
   const handleAssignFile = useCallback(async () => {
     if (!selectedFileId) return;
@@ -953,6 +974,26 @@ export default function IngestPage() {
                 </DialogFooter>
               </DialogContent>
             </Dialog>
+
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full"
+              onClick={handleCleanupTestData}
+              disabled={cleanupLoading}
+            >
+              {cleanupLoading ? (
+                <>
+                  <Loader2 className="size-3.5 mr-1.5 animate-spin" />
+                  Removing seeded data...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="size-3.5 mr-1.5" />
+                  Remove Seed/Test Data
+                </>
+              )}
+            </Button>
           </div>
         </GlassCard>
       </div>
