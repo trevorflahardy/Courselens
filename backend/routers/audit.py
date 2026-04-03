@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from collections.abc import AsyncGenerator
@@ -12,8 +13,18 @@ from fastapi.responses import StreamingResponse
 
 from backend.db import get_db
 from backend.models.audit import AuditRun, AuditStatus
+from backend.services.audit_engine import (
+    AuditProgress,
+    run_audit_all,
+    run_single_audit,
+    summarize_findings,
+)
 
 router = APIRouter(prefix="/api/audit", tags=["audit"])
+
+# Track in-flight audit tasks for SSE streaming
+_audit_tasks: dict[str, asyncio.Task[AuditProgress]] = {}
+_audit_progress: dict[str, AuditProgress] = {}
 
 
 @router.get("/runs")
@@ -58,32 +69,57 @@ async def start_audit(assignment_id: str) -> AuditRun:
         raise HTTPException(status_code=404, detail=f"Node '{assignment_id}' not found")
 
     run_id = f"run-{uuid.uuid4().hex[:8]}"
-    now = datetime.now().isoformat()
+
+    # Launch the audit in the background so the POST returns immediately
+    # Pre-create progress so SSE can stream events as they arrive
+    _audit_progress[run_id] = AuditProgress(run_id=run_id, assignment_id=assignment_id)
+
+    async def _run() -> AuditProgress:
+        progress = await run_single_audit(assignment_id, run_id=run_id)
+        _audit_progress[run_id] = progress
+        _audit_tasks.pop(run_id, None)
+        return progress
+
+    task = asyncio.create_task(_run())
+    _audit_tasks[run_id] = task
+
+    # Wait briefly for the run record to be inserted by run_single_audit
+    await asyncio.sleep(0.1)
 
     db = await get_db()
-    await db.execute(
-        """INSERT INTO audit_runs (id, assignment_id, status, started_at)
-           VALUES (?, ?, 'running', ?)""",
-        (run_id, assignment_id, now),
-    )
-    await db.commit()
-
-    # TODO: Phase 2B.8 — spawn Claude subprocess via claude_runner.py
-    # For now, mark as done immediately (no actual audit execution)
-    await db.execute(
-        "UPDATE audit_runs SET status = 'done', finished_at = ? WHERE id = ?",
-        (datetime.now().isoformat(), run_id),
-    )
-    await db.commit()
-
     cursor = await db.execute("SELECT * FROM audit_runs WHERE id = ?", (run_id,))
     row = await cursor.fetchone()
+    if row is None:
+        # run_single_audit creates the record; if not yet, return a synthetic one
+        now = datetime.now().isoformat()
+        return AuditRun(
+            id=run_id,
+            assignment_id=assignment_id,
+            status=AuditStatus.RUNNING,
+            started_at=datetime.fromisoformat(now),
+        )
     return AuditRun.model_validate(dict(row), strict=False)
+
+
+@router.post("/all")
+async def start_audit_all(batch_size: int = 4) -> dict[str, object]:
+    """Run audits on all assignment nodes in parallel batches."""
+    return await run_audit_all(batch_size=batch_size)
+
+
+@router.get("/summary")
+async def get_summary() -> dict[str, object]:
+    """Get a course-level summary of all findings."""
+    return await summarize_findings()
 
 
 @router.get("/{run_id}/stream")
 async def stream_audit(run_id: str) -> StreamingResponse:
-    """SSE endpoint for streaming audit progress."""
+    """SSE endpoint for streaming audit progress.
+
+    If the audit is in-flight (tracked in _audit_progress or _audit_tasks),
+    streams live events. Otherwise, polls the DB for final status.
+    """
     db = await get_db()
     cursor = await db.execute("SELECT * FROM audit_runs WHERE id = ?", (run_id,))
     row = await cursor.fetchone()
@@ -93,15 +129,53 @@ async def stream_audit(run_id: str) -> StreamingResponse:
     async def event_generator() -> AsyncGenerator[str, None]:
         yield _sse_event("heartbeat", {"message": "connected", "run_id": run_id})
 
-        # Poll the DB for status changes
-        # In production, this will tail the Claude subprocess output
-        run = AuditRun.model_validate(dict(row), strict=False)
-        if run.status == AuditStatus.DONE:
-            yield _sse_event("done", {"run_id": run_id, "total_findings": run.total_findings})
-        elif run.status == AuditStatus.ERROR:
-            yield _sse_event("error", {"message": run.error_message or "Unknown error"})
-        else:
-            yield _sse_event("heartbeat", {"message": "audit in progress"})
+        # If there's an in-flight task, stream its events
+        seen_events = 0
+        task = _audit_tasks.get(run_id)
+        if task is not None:
+            while not task.done():
+                progress = _audit_progress.get(run_id)
+                if progress and len(progress.events) > seen_events:
+                    for event in progress.events[seen_events:]:
+                        yield _sse_event(
+                            str(event.get("type", "heartbeat")),
+                            event,
+                        )
+                    seen_events = len(progress.events)
+                else:
+                    yield _sse_event("heartbeat", {"message": "audit in progress"})
+                await asyncio.sleep(1)
+
+            # Emit any remaining events after task completes
+            progress = _audit_progress.get(run_id)
+            if progress:
+                for event in progress.events[seen_events:]:
+                    yield _sse_event(str(event.get("type", "heartbeat")), event)
+                yield _sse_event("done", {
+                    "run_id": run_id,
+                    "total_findings": (
+                        progress.pass1_findings + progress.pass2_findings + progress.pass3_findings
+                    ),
+                })
+                return
+
+        # No in-flight task — check DB for completed/errored run
+        db2 = await get_db()
+        cursor2 = await db2.execute("SELECT * FROM audit_runs WHERE id = ?", (run_id,))
+        row2 = await cursor2.fetchone()
+        if row2:
+            run = AuditRun.model_validate(dict(row2), strict=False)
+            if run.status == AuditStatus.DONE:
+                yield _sse_event("done", {
+                    "run_id": run_id,
+                    "total_findings": run.total_findings,
+                })
+            elif run.status == AuditStatus.ERROR:
+                yield _sse_event("error", {
+                    "message": run.error_message or "Unknown error",
+                })
+            else:
+                yield _sse_event("heartbeat", {"message": "audit in progress"})
 
     return StreamingResponse(
         event_generator(),

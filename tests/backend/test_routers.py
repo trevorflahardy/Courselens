@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from backend.main import app
+from backend.services.audit_engine import AuditProgress
 
 
 @pytest.fixture()
@@ -174,11 +177,20 @@ async def test_get_audit_run_404(client: AsyncClient) -> None:
 
 
 async def test_start_audit(client: AsyncClient) -> None:
-    r = await client.post("/api/audit/assign-01")
+    mock_progress = AuditProgress(
+        run_id="test-run", assignment_id="assign-01", status="done",
+        pass1_findings=1, pass2_findings=0, pass3_findings=0,
+    )
+
+    async def _mock_run(assignment_id: str, run_id: str | None = None) -> AuditProgress:
+        return mock_progress
+
+    with patch("backend.routers.audit.run_single_audit", side_effect=_mock_run):
+        r = await client.post("/api/audit/assign-01")
     assert r.status_code == 200
     run = r.json()
     assert run["assignment_id"] == "assign-01"
-    assert run["status"] == "done"  # Stub implementation marks done immediately
+    assert run["status"] in ("running", "done")
 
 
 async def test_start_audit_404(client: AsyncClient) -> None:
