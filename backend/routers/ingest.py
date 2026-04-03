@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import tempfile
-import uuid
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -84,7 +83,7 @@ async def api_rebuild_graph() -> dict[str, object]:
 
 @router.post("/course")
 async def ingest_course() -> dict[str, str]:
-    """Trigger Canvas live sync. Fires a background Claude subprocess; poll /status for progress."""
+    """Trigger Canvas live sync (pure Python via canvasapi). Poll /status for progress."""
     global _ingest_status
 
     if _ingest_status.get("status") == "running":
@@ -96,226 +95,63 @@ async def ingest_course() -> dict[str, str]:
         "message": "Canvas sync starting...",
         "feed": [],
     }
-    asyncio.create_task(_run_canvas_sync())
+    asyncio.create_task(_run_python_canvas_sync())
     return {"status": "started"}
 
 
-def _format_tool_feed(tool_name: str, tool_input: dict[str, object]) -> str | None:
-    """Turn a Claude tool-use call into a human-readable feed line."""
-    if "get_course_structure" in tool_name:
-        return "Fetching course structure..."
-    if "get_module" in tool_name:
-        return f"Fetching module: {tool_input.get('module_id', '')}"
-    if "list_modules" in tool_name:
-        return "Listing modules..."
-    if "list_module_items" in tool_name:
-        return f"Listing items in module {tool_input.get('module_id', '')}"
-    if "get_assignment_details" in tool_name:
-        aid = tool_input.get("assignment_id", tool_input.get("id", ""))
-        return f"Fetching assignment: {aid}"
-    if "get_page_content" in tool_name:
-        url = tool_input.get("page_url", tool_input.get("url", ""))
-        return f"Fetching page: {url}"
-    if "get_rubric_details" in tool_name:
-        return f"Fetching rubric: {tool_input.get('rubric_id', tool_input.get('id', ''))}"
-    if "download_course_file" in tool_name:
-        return f"Downloading file: {tool_input.get('file_id', '')}"
-    if "nodes_write" in tool_name:
-        node_id = tool_input.get("node_id", "")
-        title = tool_input.get("title", "")
-        label = title or node_id
-        return f"Saving node: {label}"
-    if "nodes_link" in tool_name:
-        return f"Linking {tool_input.get('source_id', '')} → {tool_input.get('target_id', '')}"
-    if "nodes_read" in tool_name:
-        return f"Reading node: {tool_input.get('node_id', '')}"
-    return None
-
-
-def _build_canvas_sync_prompt(course_id: str) -> str:
-    return f"""You are performing a COMPLETE, EXHAUSTIVE ingestion of Canvas course {course_id} into the audit database.
-Do NOT skip any module, item, or rubric. Process everything.
-
-═══ PHASE 1: DISCOVER ALL CONTENT ═══
-
-Step 1 — Get full course structure:
-  Call mcp__canvas-api__get_course_structure with course_id="{course_id}".
-  Write down every module name and every item within each module before proceeding.
-  Total up the item count so you know when you are done.
-
-Step 2 — Fetch full details for EVERY item (no skipping):
-  For each item in each module:
-  • Assignments / Quizzes → mcp__canvas-api__get_assignment_details
-      Record the returned `rubric_id` field (note it even if null).
-  • Pages / WikiPages → mcp__canvas-api__get_page_content
-  • Files → use title and canvas_url as-is, no extra fetch needed.
-
-Step 3 — Upsert every item via nodes_write immediately after fetching it:
-  node_id conventions:
-    assignment → "assignment-{{canvas_id}}"
-    page       → "page-{{url_slug}}"
-    file       → "file-{{canvas_id}}"
-    quiz       → "quiz-{{canvas_id}}"
-  For EVERY assignment node_write call you MUST include:
-    rubric_id = the Canvas rubric_id string if present (omit arg if null/missing)
-    week      = integer parsed from module name ("Week 5 — Design" → 5), omit if unparseable
-    module    = full module name string
-    canvas_url = the item's HTML URL
-
-═══ PHASE 2: FETCH AND LINK ALL RUBRICS ═══
-
-Step 4 — After ALL items are upserted, do a dedicated rubric pass:
-  For every assignment that had a non-null rubric_id (your list from Step 2):
-  a. Call mcp__canvas-api__get_rubric_details with course_id="{course_id}" and rubric_id=<id>
-  b. Upsert a rubric node:
-       nodes_write(node_id="rubric-<rubric_id>", node_type="rubric",
-                   title=<rubric title>, description=<comma-joined criterion names>,
-                   source="canvas_mcp")
-  c. Link it:
-       nodes_link(source_id="assignment-<canvas_id>", target_id="rubric-<rubric_id>",
-                  link_type="assignment")
-  Repeat for ALL assignments with rubrics — do not stop early.
-
-═══ PHASE 3: VERIFY COMPLETENESS ═══
-
-Step 5 — Self-check before finishing:
-  Call nodes_list with node_type="assignment".
-  Count assignments total vs assignments where rubric_id is set.
-  If any assignment has rubric_id set but you did not create its rubric node and link, do it now.
-  Log a line: "Verification: X/Y assignments have rubrics linked."
-
-═══ COMPLETION ═══
-
-When ALL three phases are done, output exactly this JSON on its own line (replace N with real counts):
-{{"status":"done","modules":N,"assignments":N,"pages":N,"files":N,"rubrics_fetched":N,"rubrics_linked":N}}"""
-
-
-async def _run_canvas_sync() -> None:
-    """Background task: spawns Claude to sync Canvas data into the audit DB via MCP tools."""
+async def _run_python_canvas_sync() -> None:
+    """Background task: pure-Python Canvas sync using canvasapi library."""
     global _ingest_status
-    from backend.claude_runner import get_run_state, start_audit_run, tail_run
     from backend.config import settings
+    from backend.db import get_db
+    from backend.services.ingest.canvas_sync import run_full_sync
 
     course_id = settings.canvas_course_id
     if not course_id:
         logger.error("Canvas sync aborted: canvas_course_id is not set in .env")
-        _ingest_status = {
-            "status": "error",
-            "stage": "error",
-            "message": "canvas_course_id not set in .env",
-        }
+        _ingest_status = {"status": "error", "stage": "error", "message": "canvas_course_id not set in .env"}
         return
 
-    run_id = f"canvas-sync-{uuid.uuid4().hex[:8]}"
-    logger.info("Canvas sync starting: run_id=%s course_id=%s", run_id, course_id)
+    if not settings.canvas_api_token:
+        logger.error("Canvas sync aborted: canvas_api_token is not set in .env")
+        _ingest_status = {"status": "error", "stage": "error", "message": "canvas_api_token not set in .env"}
+        return
+
+    logger.info("Python Canvas sync starting for course %s", course_id)
+
+    async def _on_progress(msg: str) -> None:
+        feed = _ingest_status.get("feed")
+        if isinstance(feed, list):
+            feed.append(msg)
+        _ingest_status["message"] = msg
 
     try:
-        _ingest_status["feed"] = []  # reset feed for this run
-
-        state = await start_audit_run(
-            run_id=run_id,
-            assignment_id="canvas-sync",
-            prompt=_build_canvas_sync_prompt(course_id),
-            allowed_tools=None,  # allow all MCP tools
+        db = await get_db()
+        result = await run_full_sync(
+            course_id=course_id,
+            canvas_base_url=settings.canvas_api_url,
+            canvas_token=settings.canvas_api_token,
+            db=db,
+            on_progress=_on_progress,
         )
+        if result.errors:
+            logger.warning("Canvas sync completed with %d errors: %s", len(result.errors), result.errors)
 
-        if state.status == "error":
-            # start_audit_run already logged the cause (e.g. CLI not found)
-            last_event = state.events[-1] if state.events else {}
-            msg = last_event.get("message", "Failed to start Claude subprocess")
-            logger.error("Canvas sync could not start subprocess: %s", msg)
-            _ingest_status = {"status": "error", "stage": "error", "message": str(msg), "feed": []}
-            return
-
-        logger.debug("Claude subprocess started: pid=%s", state.process.pid if state.process else "N/A")
-
-        _KEYWORD_STAGES: dict[str, str] = {
-            "rubric": "processing_rubrics",
-            "assignment": "extracting_assignments",
-            "page": "extracting_assignments",
-            "graph": "building_graph",
-            "edge": "building_graph",
-        }
-
-        event_count = 0
-        async for event in tail_run(run_id):
-            event_count += 1
-            event_type = event.get("type", "unknown")
-            logger.debug("Canvas sync stream event #%d type=%s", event_count, event_type)
-
-            if event_type == "error":
-                logger.error("Canvas sync stream error: %s", event.get("message", ""))
-
-            if event_type == "assistant":
-                msg_obj = event.get("message")
-                content = msg_obj.get("content", []) if isinstance(msg_obj, dict) else []
-                if isinstance(content, list):
-                    for block in content:
-                        if not isinstance(block, dict):
-                            continue
-
-                        if block.get("type") == "tool_use":
-                            tool_name = block.get("name", "")
-                            tool_input = block.get("input") or {}
-                            tool_input_dict = tool_input if isinstance(tool_input, dict) else {}
-                            logger.debug("Canvas sync tool_use: %s input_keys=%s", tool_name, list(tool_input_dict.keys()))
-                            feed_line = _format_tool_feed(tool_name, tool_input_dict)
-                            if feed_line:
-                                logger.info("Canvas sync feed: %s", feed_line)
-                                feed = _ingest_status.get("feed")
-                                if isinstance(feed, list):
-                                    feed.append(feed_line)
-
-                        if block.get("type") == "text":
-                            text = block.get("text", "")
-                            logger.debug("Canvas sync text: %.200s", text)
-                            text_lower = text.lower()
-                            for kw, stage in _KEYWORD_STAGES.items():
-                                if kw in text_lower:
-                                    logger.info("Canvas sync stage → %s", stage)
-                                    _ingest_status.update({
-                                        "status": "running",
-                                        "stage": stage,
-                                        "message": f"Running: {stage.replace('_', ' ')}",
-                                    })
-                                    break
-
-        logger.info("Canvas sync tail_run exhausted after %d events", event_count)
-
-        run = get_run_state(run_id)
-        logger.info(
-            "Canvas sync final run state: status=%s events=%d",
-            run.status if run else "NOT_FOUND",
-            len(run.events) if run else 0,
-        )
-        if run and run.status == "done":
-            _ingest_status.update({
-                "status": "done",
-                "stage": "done",
-                "last_run": datetime.now().isoformat(),
-                "message": "Canvas sync complete",
-            })
-        else:
-            # Collect the last error event message for a more useful status
-            error_msg = "Canvas sync failed — check backend logs"
-            if run:
-                for ev in reversed(run.events):
-                    if ev.get("type") == "error" and ev.get("message"):
-                        error_msg = str(ev["message"])
-                        break
-            logger.error("Canvas sync did not complete successfully: %s", error_msg)
-            _ingest_status.update({
-                "status": "error",
-                "stage": "error",
-                "message": error_msg,
-            })
-    except Exception as exc:
-        logger.exception("Canvas sync background task raised an unhandled exception")
+        await _on_progress("Building dependency graph...")
+        graph_result = await rebuild_graph()
         _ingest_status.update({
-            "status": "error",
-            "stage": "error",
-            "message": str(exc),
+            "status": "done",
+            "stage": "done",
+            "last_run": datetime.now().isoformat(),
+            "message": (
+                f"Sync complete — {result.assignments} assignments, {result.pages} pages, "
+                f"{result.files} files, {result.rubrics_fetched} rubrics, "
+                f"{graph_result.total_edges} graph edges"
+            ),
         })
+    except Exception as exc:
+        logger.exception("Python Canvas sync background task raised an unhandled exception")
+        _ingest_status.update({"status": "error", "stage": "error", "message": str(exc)})
 
 
 @router.get("/status")
@@ -404,9 +240,6 @@ async def dedup_files() -> dict[str, int]:
     return {"groups_merged": merged, "nodes_deleted": deleted}
 
 
-_rubric_fetch_status: dict[str, object] = {"status": "idle"}
-
-
 @router.post("/link-rubrics")
 async def link_rubrics() -> dict[str, object]:
     """Pure-Python pass: create node_links for every assignment that has a rubric_id set
@@ -452,109 +285,165 @@ async def link_rubrics() -> dict[str, object]:
     return {"linked": linked, "already_linked": already_linked, "missing_rubric_nodes": missing}
 
 
-def _build_fetch_rubrics_prompt(course_id: str, missing: list[dict[str, str]]) -> str:
-    lines = "\n".join(
-        f'  - assignment_id="{m["assignment_id"]}"  rubric_id="{m["rubric_id"]}"'
-        for m in missing
-    )
-    count = len(missing)
-    return f"""You are fetching {count} missing rubric(s) for Canvas course {course_id}.
 
-The following assignments exist in the audit database but their rubric nodes have not been created yet.
-Fetch and upsert EVERY rubric in this list — do not skip any:
+@router.post("/sync-rubrics")
+async def sync_rubrics() -> dict[str, object]:
+    """Pure-Python Canvas REST sync for rubrics.
 
-{lines}
+    1. Fetches all assignments from Canvas to get authoritative rubric_id values.
+    2. Updates nodes.rubric_id for every assignment.
+    3. Fetches full rubric details (criteria, ratings) for every rubric_id found.
+    4. Upserts rubric nodes with rich description and populates the rubrics table.
+    5. Creates node_links for assignment → rubric pairs.
 
-For each entry above:
-1. Call mcp__canvas-api__get_rubric_details with course_id="{course_id}" and rubric_id=<rubric_id>
-2. Upsert the rubric node:
-     nodes_write(node_id="rubric-<rubric_id>", node_type="rubric",
-                 title=<rubric title from Canvas>,
-                 description=<comma-joined criterion descriptions>,
-                 source="canvas_mcp")
-3. Link it to the assignment:
-     nodes_link(source_id=<assignment_id>, target_id="rubric-<rubric_id>", link_type="assignment")
+    No Claude subprocess needed — deterministic and always correct.
+    """
+    import html as _html
+    import json as _json
+    import urllib.error
+    import urllib.request
+    from datetime import datetime
 
-Process all {count} rubrics. When done, output exactly this JSON on its own line:
-{{"status":"done","rubrics_fetched":{count}}}"""
-
-
-async def _run_fetch_missing_rubrics(missing: list[dict[str, str]]) -> None:
-    global _rubric_fetch_status
-    from backend.claude_runner import get_run_state, start_audit_run, tail_run
     from backend.config import settings
-
-    course_id = settings.canvas_course_id
-    if not course_id:
-        _rubric_fetch_status = {"status": "error", "message": "canvas_course_id not set in .env"}
-        return
-
-    run_id = f"fetch-rubrics-{uuid.uuid4().hex[:8]}"
-    logger.info("Fetch-rubrics starting: run_id=%s missing=%d", run_id, len(missing))
-
-    try:
-        state = await start_audit_run(
-            run_id=run_id,
-            assignment_id="fetch-rubrics",
-            prompt=_build_fetch_rubrics_prompt(course_id, missing),
-            allowed_tools=None,
-        )
-        if state.status == "error":
-            msg = state.events[-1].get("message", "Failed to start subprocess") if state.events else "Failed"
-            _rubric_fetch_status = {"status": "error", "message": str(msg)}
-            return
-
-        async for _ in tail_run(run_id):
-            pass
-
-        run = get_run_state(run_id)
-        if run and run.status == "done":
-            _rubric_fetch_status = {
-                "status": "done",
-                "message": f"Fetched {len(missing)} rubric(s). Run Link Rubrics to create the links.",
-            }
-        else:
-            _rubric_fetch_status = {"status": "error", "message": "Fetch rubrics run did not complete"}
-    except Exception as exc:
-        logger.exception("fetch-rubrics background task failed")
-        _rubric_fetch_status = {"status": "error", "message": str(exc)}
-
-
-@router.post("/fetch-missing-rubrics")
-async def fetch_missing_rubrics() -> dict[str, object]:
-    """Spawn a targeted Claude run to fetch rubric nodes that are referenced by assignments
-    but do not yet exist in the database. Run link-rubrics afterward to create the links."""
-    global _rubric_fetch_status
     from backend.db import get_db
 
-    if _rubric_fetch_status.get("status") == "running":
-        return {"status": "already_running"}
+    if not settings.canvas_api_token:
+        raise HTTPException(status_code=500, detail="CANVAS_API_TOKEN not set in .env")
 
+    base = settings.canvas_api_url.rstrip("/")
+    course_id = settings.canvas_course_id
+    headers = {"Authorization": f"Bearer {settings.canvas_api_token}"}
+
+    def _get(url: str) -> object:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req) as r:
+            return _json.load(r)
+
+    now = datetime.now().isoformat()
     db = await get_db()
-    cursor = await db.execute(
-        """SELECT n.id as assignment_id, n.rubric_id
-           FROM nodes n
-           WHERE n.type = 'assignment'
-             AND n.rubric_id IS NOT NULL
-             AND NOT EXISTS (
-               SELECT 1 FROM nodes r WHERE r.id = 'rubric-' || n.rubric_id
-             )"""
+
+    # Step 1 — fetch all assignments from Canvas
+    assignments_data = await asyncio.to_thread(
+        _get, f"{base}/courses/{course_id}/assignments?per_page=100"
     )
-    rows = await cursor.fetchall()
-    missing = [{"assignment_id": row["assignment_id"], "rubric_id": row["rubric_id"]} for row in rows]
+    if not isinstance(assignments_data, list):
+        raise HTTPException(status_code=502, detail="Unexpected Canvas response for assignments")
 
-    if not missing:
-        return {"status": "nothing_to_do", "message": "All rubric nodes already exist."}
+    rubric_ids_to_fetch: dict[str, str] = {}  # rubric_id → assignment_id
+    assignment_updates = 0
 
-    _rubric_fetch_status = {"status": "running", "message": f"Fetching {len(missing)} missing rubric(s)…"}
-    asyncio.create_task(_run_fetch_missing_rubrics(missing))
-    return {"status": "started", "rubrics_to_fetch": len(missing)}
+    for a in assignments_data:
+        assignment_id = f"assignment-{a['id']}"
+        rubric_id = str(a["rubric_settings"]["id"]) if a.get("rubric_settings") else None
 
+        # Check node exists in DB
+        cursor = await db.execute("SELECT 1 FROM nodes WHERE id=?", (assignment_id,))
+        if await cursor.fetchone() is None:
+            continue
 
-@router.get("/rubric-fetch-status")
-async def rubric_fetch_status() -> dict[str, object]:
-    """Poll the status of the fetch-missing-rubrics background run."""
-    return _rubric_fetch_status
+        # Update rubric_id on assignment node
+        await db.execute(
+            "UPDATE nodes SET rubric_id=?, updated_at=? WHERE id=?",
+            (rubric_id, now, assignment_id),
+        )
+        assignment_updates += 1
+
+        if rubric_id:
+            rubric_ids_to_fetch[rubric_id] = assignment_id
+
+    await db.commit()
+
+    # Step 2 — fetch and upsert each unique rubric
+    rubric_nodes_upserted = 0
+    links_created = 0
+    errors: list[str] = []
+
+    for rubric_id, primary_assignment_id in rubric_ids_to_fetch.items():
+        rubric_node_id = f"rubric-{rubric_id}"
+        try:
+            rdata = await asyncio.to_thread(
+                _get, f"{base}/courses/{course_id}/rubrics/{rubric_id}"
+            )
+            if not isinstance(rdata, dict):
+                raise ValueError("non-dict rubric response")
+
+            title = rdata.get("title", f"Rubric {rubric_id}")
+            pts = rdata.get("points_possible")
+            criteria = rdata.get("data") or []
+
+            desc_parts = [f"{c['description']} ({c['points']}pts)" for c in criteria]
+            description = " | ".join(desc_parts)
+
+            criteria_json = _json.dumps([{
+                "id": c.get("id"),
+                "description": c.get("description", ""),
+                "long_description": _html.unescape(c.get("long_description") or ""),
+                "points": c.get("points"),
+                "ratings": [
+                    {"description": r.get("description"), "points": r.get("points")}
+                    for r in c.get("ratings", [])
+                ],
+            } for c in criteria])
+
+            # Upsert rubric node
+            cursor = await db.execute("SELECT 1 FROM nodes WHERE id=?", (rubric_node_id,))
+            if await cursor.fetchone():
+                await db.execute(
+                    "UPDATE nodes SET title=?, description=?, points_possible=?, updated_at=? WHERE id=?",
+                    (title, description, pts, now, rubric_node_id),
+                )
+            else:
+                await db.execute(
+                    "INSERT INTO nodes (id, type, title, description, points_possible, source, updated_at, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (rubric_node_id, "rubric", title, description, pts, "canvas_api", now, now),
+                )
+            rubric_nodes_upserted += 1
+
+            # Upsert rubrics table (structured criteria)
+            cursor = await db.execute("SELECT 1 FROM rubrics WHERE id=?", (rubric_node_id,))
+            if await cursor.fetchone():
+                await db.execute(
+                    "UPDATE rubrics SET title=?, points_possible=?, criteria_json=?, canvas_id=?, updated_at=? WHERE id=?",
+                    (title, pts, criteria_json, rubric_id, now, rubric_node_id),
+                )
+            else:
+                await db.execute(
+                    "INSERT INTO rubrics (id, canvas_id, title, points_possible, criteria_json, assignment_id, created_at, updated_at) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (rubric_node_id, rubric_id, title, pts, criteria_json, primary_assignment_id, now, now),
+                )
+
+            # Create node_links for ALL assignments that reference this rubric
+            cursor = await db.execute(
+                "SELECT id FROM nodes WHERE rubric_id=? AND type='assignment'", (rubric_id,)
+            )
+            all_assignments = await cursor.fetchall()
+            for row in all_assignments:
+                aid = row["id"]
+                c2 = await db.execute(
+                    "SELECT 1 FROM node_links WHERE source_id=? AND target_id=? AND link_type='assignment'",
+                    (aid, rubric_node_id),
+                )
+                if await c2.fetchone() is None:
+                    await db.execute(
+                        "INSERT INTO node_links (source_id, target_id, link_type) VALUES (?,?,'assignment')",
+                        (aid, rubric_node_id),
+                    )
+                    links_created += 1
+
+        except Exception as exc:
+            errors.append(f"rubric-{rubric_id}: {exc}")
+            logger.warning("sync-rubrics error for rubric %s: %s", rubric_id, exc)
+
+    await db.commit()
+
+    return {
+        "assignment_nodes_updated": assignment_updates,
+        "rubrics_upserted": rubric_nodes_upserted,
+        "links_created": links_created,
+        "errors": errors,
+    }
 
 
 @router.post("/clear-all")
