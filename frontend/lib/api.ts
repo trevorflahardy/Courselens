@@ -122,6 +122,9 @@ export const api = {
   dedupFiles: () =>
     request<{ groups_merged: number; nodes_deleted: number }>("/api/ingest/dedup-files", { method: "POST" }),
 
+  clearAll: () =>
+    request<Record<string, number>>("/api/ingest/clear-all", { method: "POST" }),
+
   cleanupTestData: () =>
     request<{
       nodes_deleted: number;

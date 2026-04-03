@@ -374,6 +374,22 @@ async def dedup_files() -> dict[str, int]:
     return {"groups_merged": merged, "nodes_deleted": deleted}
 
 
+@router.post("/clear-all")
+async def clear_all() -> dict[str, int]:
+    """Wipe every table so the user can start a fresh ingest from scratch."""
+    from backend.db import get_db
+
+    db = await get_db()
+
+    counts: dict[str, int] = {}
+    for table in ("findings", "audit_runs", "edges", "node_links", "files", "rubrics", "nodes", "ingest_log"):
+        cursor = await db.execute(f"DELETE FROM {table}")  # noqa: S608 — table names are literals
+        counts[f"{table}_deleted"] = cursor.rowcount
+
+    await db.commit()
+    return counts
+
+
 @router.post("/cleanup-test-data")
 async def cleanup_test_data() -> dict[str, int]:
     """Remove demo/seed data that predates real Canvas ingestion.

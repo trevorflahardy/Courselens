@@ -1103,10 +1103,17 @@ export default function IngestPage() {
                   <Button
                     variant="destructive"
                     size="sm"
-                    onClick={() => {
+                    onClick={async () => {
                       setClearDialogOpen(false);
-                      pushLog("extract", "Clear all data", "ok");
-                      // Future: call clear endpoint
+                      pushLog("extract", "Clearing all data…", "pending");
+                      try {
+                        await api.clearAll();
+                        pushLog("extract", "All data cleared", "ok");
+                        await refreshNodeCounts();
+                        await refreshAssignableData();
+                      } catch (err) {
+                        pushLog("extract", `Clear failed: ${err instanceof Error ? err.message : String(err)}`, "error");
+                      }
                     }}
                   >
                     <AlertTriangle className="size-3.5 mr-1.5" />
