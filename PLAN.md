@@ -44,6 +44,24 @@ Phase 7 ──────────────── Launch & Handoff ──
 
 ---
 
+## Implementation Deviations from Original Plan
+
+> Decisions made during implementation that differ from the original plan. Preserved here for context.
+
+| Decision | Original Plan | What Was Built | Reason |
+|----------|---------------|----------------|--------|
+| **Canvas integration** | Canvas MCP only (80+ tools via Claude Code Max) | `canvasapi` Python package for direct REST calls + Canvas MCP retained for Claude subprocess tools | Canvas MCP requires a running Claude Code session — using it for backend ingestion created a subprocess dependency. Direct REST API via `canvasapi` is simpler, faster, and doesn't require Claude to be running to ingest a course. |
+| **Frontend package manager** | npm | Bun v1.2.17 | Faster installs, native lockfile, better DX. |
+| **MCP directory name** | `mcp/` | `audit_mcp/` | Renamed to avoid shadowing the pip `mcp` package used by FastMCP internally. |
+| **Chroma MCP / RAG** | Active ChromaDB integration for semantic search in audit prompts | Deferred — `data/chroma/` exists but not wired into prompts | 3-pass graph-based reasoning proved sufficient for finding types targeted. Semantic similarity search is still on the roadmap but not blocking audits. |
+| **Batch audit management** | Single `POST /api/audit/all` endpoint | Added `GET /api/audit/state` (runtime running-audit count/IDs) + `POST /api/audit/runs/{id}/cancel` | Needed runtime visibility and cancellation for long-running batch audits in the UI. |
+| **Graph node type filter** | Type-colored nodes only | Added **node type visibility toggles** in the graph page header | Courses with many file/page nodes cluttered the graph; per-type toggles let instructors focus on assignments only. |
+| **PDF module auto-assignment** | Manual file triage only | Auto-assignment of PDF nodes inferred from parent module context during ingestion | Reduces post-ingest cleanup work significantly. |
+
+---
+
+---
+
 ## Phase 0: Project Foundation ✅ COMPLETE
 
 **Goal**: Repository scaffolded, tooling configured, demo mode runnable.
@@ -262,8 +280,11 @@ These changes must be applied to `backend/models/`, `backend/services/`, `script
 ### Implementation Notes
 
 - **canvas_zip.py**: Extracts files from IMSCC ZIP, classifies by folder structure (assignments, pages, files), runs text extraction on PDFs (pypdf) and DOCXs (python-docx).
-- **canvas_live.py**: Uses Canvas MCP tools to walk modules, extract full assignment/page/rubric content, and parse HTML for internal links (`data-api-endpoint` attributes).
+- **canvas_live.py + canvas_sync.py**: Originally planned to use Canvas MCP exclusively. **Swapped to direct Canvas REST API** via the `canvasapi` Python package for backend ingestion. Canvas MCP is still available to Claude Code subprocesses during audits, but the ingestion pipeline no longer requires a Claude process to be running.
+- **html_links.py**: Parses Canvas `data-api-endpoint` attributes and `<a href>` tags from HTML descriptions. Classifies links as `file`, `page`, `assignment`, or `external`. Called during ingestion and available as a standalone re-link endpoint (`POST /api/ingest/relink-content`).
 - **graph_builder.py**: Three edge sources — explicit links from node_links table, sequential edges from module item ordering, and week-to-week transition edges. Flags orphan nodes with no edges.
+- **Auto PDF module assignment**: During ZIP ingestion, PDF nodes with no explicit module context are auto-assigned to a module inferred from the ZIP folder path, reducing manual triage work.
+- **Additional ingest endpoints added** (beyond original plan): `POST /api/ingest/sync-rubrics`, `POST /api/ingest/link-rubrics`, `POST /api/ingest/relink-content`, `POST /api/ingest/dedup-files`, `POST /api/ingest/cleanup-test-data`, `POST /api/ingest/clear-all`.
 
 **Agent/Skill Audits**:
 
@@ -310,6 +331,7 @@ These changes must be applied to `backend/models/`, `backend/services/`, `script
 - **Subprocess execution**: Uses `claude_runner.py` with `create_subprocess_exec` (no shell injection). Each pass gets its own subprocess with MCP tool allowlist. Finding counts verified against DB after execution.
 - **SSE streaming**: Router spawns audit as background `asyncio.Task`, SSE endpoint polls progress events at 1s intervals, emitting pass_start/pass_done/done events.
 - **Batch auditing**: `run_audit_all` processes assignments in week-sorted batches with `asyncio.gather`. Exceptions are caught per-task (no single failure aborts the batch).
+- **Batch management additions** (beyond original plan): `GET /api/audit/state` returns live running-audit count + IDs (used by frontend to show running indicator). `POST /api/audit/runs/{id}/cancel` marks a running audit as errored and cancels the asyncio task.
 - **Test strategy**: Prompt builder tests verify content inclusion and edge cases. Integration tests mock subprocess layer to avoid spawning real Claude processes in CI.
 
 **Agent/Skill Audits**:
@@ -346,7 +368,8 @@ These changes must be applied to `backend/models/`, `backend/services/`, `script
 | 5B.5 | Filter bar                  | ✅     | All / Gaps / Orphans / Inferred toggle buttons in header                                          |
 | 5B.6 | Node detail panel           | ✅     | Right panel overlay with type/week/status badges, finding count, link to assignment detail        |
 | 5B.7 | Legend                      | ✅     | Bottom-left legend showing node type colors and edge type styles                                  |
-| 5B.8 | Connected-only graph filter | ✅     | Added `Connected` filter to hide disconnected nodes with no active edges                          |
+| 5B.8 | Connected-only graph filter  | ✅     | Added `Connected` filter to hide disconnected nodes with no active edges                          |
+| 5B.9 | Node type visibility toggles | ✅     | Per-type toggle buttons in graph header to show/hide nodes by type (assignment/page/file/etc.) — reduces clutter for large courses |
 
 ### Stream 5C: Audit Live View ✅
 
@@ -368,6 +391,8 @@ These changes must be applied to `backend/models/`, `backend/services/`, `script
 | 5D.5 | Data summary                   | ✅     | Node counts by type, total edges, last ingestion date                                         |
 | 5D.6 | Unassigned file triage         | ✅     | Assign unfiled files to assignment/lecture or set week/module; persists node links + metadata |
 | 5D.7 | ZIP upload API integration fix | ✅     | Frontend upload now matches backend multipart endpoint and reports ingest failures correctly  |
+| 5D.8 | Rubric sync controls           | ✅     | "Sync Rubrics" and "Link Rubrics" actions added to ingest page — fetch rubrics from Canvas and link to assignment nodes |
+| 5D.9 | Data management controls       | ✅     | Dedup Files, Relink Content, Clear All actions added for post-ingest data hygiene |
 
 ### Stream 5E: Design System — Glassmorphism ✅
 
