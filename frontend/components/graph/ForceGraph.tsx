@@ -28,6 +28,8 @@ interface ForceGraphProps {
   nodes: CourseNodeSummary[];
   edges: GraphEdge[];
   filter: "all" | "connected" | "gaps" | "orphans" | "inferred";
+  hideImageFiles?: boolean;
+  hiddenNodeTypes?: NodeType[];
   onNodeClick?: (nodeId: string) => void;
   selectedNodeId?: string | null;
 }
@@ -68,11 +70,25 @@ function stableNoise(input: string): number {
   return (Math.abs(hash) % 1000) / 1000;
 }
 
+function isImageFileNode(node: CourseNodeSummary): boolean {
+  if (node.type !== "file") return false;
+  const title = node.title?.toLowerCase() ?? "";
+  return /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i.test(title);
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
-export function ForceGraph({ nodes, edges, filter, onNodeClick, selectedNodeId }: ForceGraphProps) {
+export function ForceGraph({
+  nodes,
+  edges,
+  filter,
+  hideImageFiles = false,
+  hiddenNodeTypes = [],
+  onNodeClick,
+  selectedNodeId,
+}: ForceGraphProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const simulationRef = useRef<d3.Simulation<GraphNode, GraphLink> | null>(null);
@@ -104,6 +120,29 @@ export function ForceGraph({ nodes, edges, filter, onNodeClick, selectedNodeId }
       label: e.label,
       confidence: e.confidence,
     })) as GraphLink[];
+
+    if (hiddenNodeTypes.length > 0) {
+      const hiddenTypes = new Set<NodeType>(hiddenNodeTypes);
+      const hiddenIds = new Set(filteredNodes.filter((node) => hiddenTypes.has(node.type)).map((node) => node.id));
+      filteredNodes = filteredNodes.filter((node) => !hiddenIds.has(node.id));
+      filteredEdges = filteredEdges.filter((edge) => {
+        const sid = typeof edge.source === "string" ? edge.source : (edge.source as GraphNode).id;
+        const tid = typeof edge.target === "string" ? edge.target : (edge.target as GraphNode).id;
+        return !hiddenIds.has(sid) && !hiddenIds.has(tid);
+      });
+    }
+
+    if (hideImageFiles) {
+      const hiddenIds = new Set(
+        filteredNodes.filter((node) => isImageFileNode(node)).map((node) => node.id)
+      );
+      filteredNodes = filteredNodes.filter((node) => !hiddenIds.has(node.id));
+      filteredEdges = filteredEdges.filter((edge) => {
+        const sid = typeof edge.source === "string" ? edge.source : (edge.source as GraphNode).id;
+        const tid = typeof edge.target === "string" ? edge.target : (edge.target as GraphNode).id;
+        return !hiddenIds.has(sid) && !hiddenIds.has(tid);
+      });
+    }
 
     if (filter === "connected") {
       const connectedNodeIds = new Set<string>();
@@ -142,7 +181,7 @@ export function ForceGraph({ nodes, edges, filter, onNodeClick, selectedNodeId }
     }
 
     return { nodes: filteredNodes, edges: filteredEdges };
-  }, [nodes, edges, filter]);
+  }, [nodes, edges, filter, hideImageFiles, hiddenNodeTypes]);
 
   // Build / update simulation
   useEffect(() => {
@@ -211,57 +250,115 @@ export function ForceGraph({ nodes, edges, filter, onNodeClick, selectedNodeId }
     // Initial centering
     svg.call(zoom.transform, d3.zoomIdentity.translate(width / 2, height / 2).scale(0.85));
 
-    // Position nodes by week on Y axis with generous lane spacing
+    // Adaptive placement:
+    // - Auto-orients the week timeline (horizontal for dense schedules)
+    // - Packs nodes by module per week with dynamic spacing
+    // - Uses neighbor barycenter smoothing to reduce edge crossings
     const weeks = [...new Set(graphNodes.map((n) => n.week ?? 0))].sort((a, b) => a - b);
     const minWeek = weeks[0] ?? 0;
-    const maxWeek = weeks[weeks.length - 1] ?? 15;
-    const weekCount = Math.max(1, maxWeek - minWeek);
-    const laneSpacing = Math.max(56, Math.min(96, (height * 0.92) / weekCount));
-    const laneSpan = laneSpacing * weekCount;
+    const maxWeek = weeks[weeks.length - 1] ?? minWeek;
+    const timelineHorizontal = weeks.length >= 9 || width > height * 1.08;
+
+    const domainMin = minWeek === maxWeek ? minWeek - 0.5 : minWeek;
+    const domainMax = minWeek === maxWeek ? maxWeek + 0.5 : maxWeek;
+    const primarySpan = timelineHorizontal ? width * 0.82 : height * 0.82;
+    const secondarySpan = timelineHorizontal ? height * 0.78 : width * 0.78;
+
     const weekScale = d3
       .scaleLinear()
-      .domain([minWeek, maxWeek])
-      .range([-laneSpan / 2, laneSpan / 2]);
+      .domain([domainMin, domainMax])
+      .range([-primarySpan / 2, primarySpan / 2]);
 
-    const moduleKeyForNode = (node: GraphNode): string => {
-      const week = node.week ?? 0;
-      const module = node.module?.trim() || "No module";
-      return `${week}::${module}`;
-    };
+    const weekForNode = (node: GraphNode): number => node.week ?? minWeek;
 
-    const moduleCenterX = new Map<string, number>();
+    const adjacency = new Map<string, Set<string>>();
+    graphNodes.forEach((node) => adjacency.set(node.id, new Set<string>()));
+    graphEdges.forEach((edge) => {
+      const sid = typeof edge.source === "string" ? edge.source : edge.source.id;
+      const tid = typeof edge.target === "string" ? edge.target : edge.target.id;
+      if (sid === tid) return;
+      adjacency.get(sid)?.add(tid);
+      adjacency.get(tid)?.add(sid);
+    });
+    const connectionScore = (id: string): number => adjacency.get(id)?.size ?? 0;
 
-    // Deterministic initialization by lane and module cluster.
-    const nodesByWeek = d3.group(graphNodes, (n) => n.week ?? 0);
+    const secondaryTargets = new Map<string, number>();
+    const nodesByWeek = d3.group(graphNodes, (n) => weekForNode(n));
+
     for (const [week, laneNodes] of nodesByWeek) {
       const nodesByModule = d3.group(laneNodes, (n) => n.module?.trim() || "No module");
-      const moduleNames = [...nodesByModule.keys()].sort((a, b) => a.localeCompare(b));
-      const moduleSpacing = 170;
-      const totalModuleSpan = Math.max(0, (moduleNames.length - 1) * moduleSpacing);
+      const moduleNames = [...nodesByModule.keys()].sort((a, b) => {
+        const sizeDiff = (nodesByModule.get(b)?.length ?? 0) - (nodesByModule.get(a)?.length ?? 0);
+        if (sizeDiff !== 0) return sizeDiff;
+        return a.localeCompare(b);
+      });
+
+      const moduleCount = Math.max(1, moduleNames.length);
+      const totalModuleSpan = moduleCount === 1
+        ? 0
+        : Math.min(secondarySpan * 0.72, Math.max(160, moduleCount * 130));
+      const moduleStep = moduleCount <= 1 ? 0 : totalModuleSpan / (moduleCount - 1);
 
       moduleNames.forEach((moduleName, moduleIndex) => {
-        const moduleCenter = moduleNames.length === 1
+        const moduleCenter = moduleCount === 1
           ? 0
-          : -totalModuleSpan / 2 + moduleIndex * moduleSpacing;
-        moduleCenterX.set(`${week}::${moduleName}`, moduleCenter);
+          : -totalModuleSpan / 2 + moduleIndex * moduleStep;
 
         const moduleNodes = nodesByModule.get(moduleName) ?? [];
-        const sorted = [...moduleNodes].sort(
-          (a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id)
-        );
+        const sorted = [...moduleNodes].sort((a, b) => {
+          const degreeDiff = connectionScore(b.id) - connectionScore(a.id);
+          if (degreeDiff !== 0) return degreeDiff;
+          return a.title.localeCompare(b.title) || a.id.localeCompare(b.id);
+        });
+
         const count = Math.max(1, sorted.length);
-        const intraWidth = Math.min(120, 22 * (count - 1));
-        const step = count === 1 ? 0 : intraWidth / (count - 1);
+        const dynamicIntraSpan = Math.min(
+          240,
+          Math.max(44, (count - 1) * 20 + Math.min(90, count * 6))
+        );
+        const step = count <= 1 ? 0 : dynamicIntraSpan / (count - 1);
 
         sorted.forEach((node, idx) => {
-          const xBase = count === 1 ? moduleCenter : moduleCenter - intraWidth / 2 + step * idx;
-          const xJitter = (stableNoise(`${node.id}-x`) - 0.5) * 8;
-          const yJitter = (stableNoise(`${node.id}-y`) - 0.5) * 8;
-          node.x = xBase + xJitter;
-          node.y = weekScale(node.week ?? 0) + yJitter;
+          const laneBase = count === 1
+            ? moduleCenter
+            : moduleCenter - dynamicIntraSpan / 2 + step * idx;
+          secondaryTargets.set(node.id, laneBase);
         });
       });
+
     }
+
+    for (let pass = 0; pass < 2; pass += 1) {
+      graphNodes.forEach((node) => {
+        const neighbors = [...(adjacency.get(node.id) ?? [])]
+          .map((id) => secondaryTargets.get(id))
+          .filter((value): value is number => value !== undefined);
+
+        if (neighbors.length === 0) return;
+
+        const neighborMean = d3.mean(neighbors) ?? 0;
+        const current = secondaryTargets.get(node.id) ?? 0;
+        const blend = 0.2 + Math.min(0.18, connectionScore(node.id) * 0.014);
+        const next = current * (1 - blend) + neighborMean * blend;
+        const clamped = Math.max(-secondarySpan * 0.45, Math.min(secondarySpan * 0.45, next));
+        secondaryTargets.set(node.id, clamped);
+      });
+    }
+
+    graphNodes.forEach((node) => {
+      const primary = weekScale(weekForNode(node));
+      const secondary = secondaryTargets.get(node.id) ?? 0;
+      const xJitter = (stableNoise(`${node.id}-x`) - 0.5) * 12;
+      const yJitter = (stableNoise(`${node.id}-y`) - 0.5) * 12;
+
+      if (timelineHorizontal) {
+        node.x = primary + xJitter;
+        node.y = secondary + yJitter;
+      } else {
+        node.x = secondary + xJitter;
+        node.y = primary + yJitter;
+      }
+    });
 
     // Simulation
     const simulation = d3
@@ -271,13 +368,45 @@ export function ForceGraph({ nodes, edges, filter, onNodeClick, selectedNodeId }
         d3
           .forceLink<GraphNode, GraphLink>(graphEdges)
           .id((d) => d.id)
-            .distance((d) => (d.label?.startsWith("Sequential in") ? 48 : 92))
-            .strength((d) => (d.label?.startsWith("Sequential in") ? 0.55 : 0.24))
+          .distance((d) => {
+            const sourceWeek = weekForNode(d.source as GraphNode);
+            const targetWeek = weekForNode(d.target as GraphNode);
+            const weekDelta = Math.abs(sourceWeek - targetWeek);
+            const base = d.label?.startsWith("Sequential in") ? 52 : 92;
+            return base + Math.min(64, weekDelta * 12);
+          })
+          .strength((d) => {
+            const sourceWeek = weekForNode(d.source as GraphNode);
+            const targetWeek = weekForNode(d.target as GraphNode);
+            const weekDelta = Math.abs(sourceWeek - targetWeek);
+            const base = d.label?.startsWith("Sequential in") ? 0.5 : 0.24;
+            return Math.max(0.1, base - weekDelta * 0.015);
+          })
       )
-      .force("charge", d3.forceManyBody().strength(-140).distanceMax(260))
-          .force("x", d3.forceX<GraphNode>((d) => moduleCenterX.get(moduleKeyForNode(d)) ?? 0).strength(0.2))
-      .force("y", d3.forceY<GraphNode>((d) => weekScale(d.week ?? 0)).strength(0.28))
-      .force("collision", d3.forceCollide<GraphNode>(24))
+      .force(
+        "charge",
+        d3
+          .forceManyBody()
+          .strength(-Math.max(95, Math.min(260, 95 + graphNodes.length * 0.45)))
+          .distanceMax(Math.max(240, Math.min(460, Math.sqrt(graphNodes.length) * 30)))
+      )
+      .force(
+        "x",
+        d3
+          .forceX<GraphNode>((d) =>
+            timelineHorizontal ? weekScale(weekForNode(d)) : (secondaryTargets.get(d.id) ?? 0)
+          )
+          .strength(timelineHorizontal ? 0.3 : 0.22)
+      )
+      .force(
+        "y",
+        d3
+          .forceY<GraphNode>((d) =>
+            timelineHorizontal ? (secondaryTargets.get(d.id) ?? 0) : weekScale(weekForNode(d))
+          )
+          .strength(timelineHorizontal ? 0.22 : 0.32)
+      )
+      .force("collision", d3.forceCollide<GraphNode>(22))
       .alpha(0.7)
       .alphaDecay(0.06)
       .velocityDecay(0.5);
@@ -431,28 +560,50 @@ export function ForceGraph({ nodes, edges, filter, onNodeClick, selectedNodeId }
     simulation.on("tick", renderTick);
     renderTick();
 
-    // Week labels on the left
+    // Week labels and guide lines
     const labelGroup = g.append("g").attr("class", "week-labels");
     weeks.forEach((w) => {
       const isNoWeek = w === 0;
-      labelGroup
-        .append("text")
-        .attr("x", -width * 0.4)
-        .attr("y", weekScale(w))
-        .attr("font-size", "10px")
-        .attr("fill", "oklch(0.45 0.03 270)")
-        .attr("font-family", "var(--font-geist-sans), sans-serif")
-        .attr("font-weight", "600")
-        .text(isNoWeek ? "No Week / Uncategorized" : `Week ${w}`);
+      if (timelineHorizontal) {
+        labelGroup
+          .append("text")
+          .attr("x", weekScale(w))
+          .attr("y", -height * 0.37)
+          .attr("text-anchor", "middle")
+          .attr("font-size", "10px")
+          .attr("fill", "oklch(0.45 0.03 270)")
+          .attr("font-family", "var(--font-geist-sans), sans-serif")
+          .attr("font-weight", "600")
+          .text(isNoWeek ? "Uncategorized" : `Week ${w}`);
 
-      labelGroup
-        .append("line")
-        .attr("x1", -width * 0.38)
-        .attr("x2", width * 0.4)
-        .attr("y1", weekScale(w))
-        .attr("y2", weekScale(w))
-        .attr("stroke", isNoWeek ? "oklch(0.35 0.02 270 / 0.35)" : "oklch(0.25 0.02 270 / 0.3)")
-        .attr("stroke-dasharray", isNoWeek ? "6,4" : "2,4");
+        labelGroup
+          .append("line")
+          .attr("x1", weekScale(w))
+          .attr("x2", weekScale(w))
+          .attr("y1", -height * 0.34)
+          .attr("y2", height * 0.34)
+          .attr("stroke", isNoWeek ? "oklch(0.35 0.02 270 / 0.35)" : "oklch(0.25 0.02 270 / 0.3)")
+          .attr("stroke-dasharray", isNoWeek ? "6,4" : "2,4");
+      } else {
+        labelGroup
+          .append("text")
+          .attr("x", -width * 0.4)
+          .attr("y", weekScale(w))
+          .attr("font-size", "10px")
+          .attr("fill", "oklch(0.45 0.03 270)")
+          .attr("font-family", "var(--font-geist-sans), sans-serif")
+          .attr("font-weight", "600")
+          .text(isNoWeek ? "No Week / Uncategorized" : `Week ${w}`);
+
+        labelGroup
+          .append("line")
+          .attr("x1", -width * 0.38)
+          .attr("x2", width * 0.4)
+          .attr("y1", weekScale(w))
+          .attr("y2", weekScale(w))
+          .attr("stroke", isNoWeek ? "oklch(0.35 0.02 270 / 0.35)" : "oklch(0.25 0.02 270 / 0.3)")
+          .attr("stroke-dasharray", isNoWeek ? "6,4" : "2,4");
+      }
     });
 
     return () => {

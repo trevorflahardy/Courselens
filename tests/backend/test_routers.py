@@ -272,9 +272,10 @@ async def test_stream_audit_404(client: AsyncClient) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_ingest_course_501(client: AsyncClient) -> None:
+async def test_ingest_course_start_status(client: AsyncClient) -> None:
     r = await client.post("/api/ingest/course")
-    assert r.status_code == 501
+    assert r.status_code == 200
+    assert r.json().get("status") in {"started", "already_running"}
 
 
 async def test_ingest_zip(client: AsyncClient) -> None:
@@ -287,6 +288,15 @@ async def test_ingest_status(client: AsyncClient) -> None:
     r = await client.get("/api/ingest/status")
     assert r.status_code == 200
     assert r.json()["status"] in ("idle", "done", "running", "error")
+
+
+async def test_relink_content(client: AsyncClient) -> None:
+    r = await client.post("/api/ingest/relink-content")
+    assert r.status_code == 200
+    payload = r.json()
+    assert "nodes_processed" in payload
+    assert "links_extracted" in payload
+    assert "edges_total" in payload
 
 
 async def test_clear_all(client: AsyncClient) -> None:

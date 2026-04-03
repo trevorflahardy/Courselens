@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { ForceGraph, NODE_COLORS } from "@/components/graph/ForceGraph";
 import { Badge } from "@/components/ui/badge";
@@ -37,6 +37,7 @@ export default function GraphPage() {
   const [nodes, setNodes] = useState<CourseNodeSummary[]>([]);
   const [edges, setEdges] = useState<GraphEdge[]>([]);
   const [filter, setFilter] = useState<FilterMode>("all");
+  const [hideImageFiles, setHideImageFiles] = useState(true);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<CourseNodeSummary | null>(null);
   const [selectedNodeDetail, setSelectedNodeDetail] = useState<CourseNode | null>(null);
@@ -114,6 +115,33 @@ export default function GraphPage() {
   const gapCount = nodes.filter((n) => n.status === "gap").length;
   const orphanCount = nodes.filter((n) => n.status === "orphan").length;
 
+  const connectedNodes = useMemo(() => {
+    if (!selectedNodeId) return [];
+
+    const nodeById = new Map(nodes.map((node) => [node.id, node]));
+    const connected = new Map<string, { node: CourseNodeSummary; edgeLabel: string }>();
+
+    for (const edge of edges) {
+      if (edge.source !== selectedNodeId && edge.target !== selectedNodeId) {
+        continue;
+      }
+
+      const connectedId = edge.source === selectedNodeId ? edge.target : edge.source;
+      const connectedNode = nodeById.get(connectedId);
+      if (!connectedNode || connected.has(connectedId)) {
+        continue;
+      }
+
+      const direction = edge.source === selectedNodeId ? "outgoing" : "incoming";
+      connected.set(connectedId, {
+        node: connectedNode,
+        edgeLabel: edge.label ?? `${edge.edge_type} • ${direction}`,
+      });
+    }
+
+    return Array.from(connected.values()).sort((a, b) => a.node.title.localeCompare(b.node.title));
+  }, [selectedNodeId, nodes, edges]);
+
   return (
     <div className="flex flex-col h-[calc(100vh-5rem)] -mx-8 -my-6">
       {/* Header bar */}
@@ -146,7 +174,23 @@ export default function GraphPage() {
         </div>
 
         {/* Filter toggles */}
-        <div className="flex items-center gap-1 bg-white/[0.03] rounded-lg p-1 border border-white/[0.06]">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setHideImageFiles((prev) => !prev)}
+            className={`
+              px-3 py-1.5 rounded-md text-[11px] font-medium transition-all duration-150 border
+              ${
+                hideImageFiles
+                  ? "bg-primary/20 text-primary border-primary/40"
+                  : "bg-white/3 text-muted-foreground border-white/10 hover:text-foreground"
+              }
+            `}
+            title="Hide image file nodes (png, jpg, gif, svg, webp, etc.)"
+          >
+            {hideImageFiles ? "Images Hidden" : "Show Images"}
+          </button>
+
+          <div className="flex items-center gap-1 bg-white/3 rounded-lg p-1 border border-white/6">
           {FILTER_OPTIONS.map((opt) => (
             <button
               key={opt.value}
@@ -164,6 +208,7 @@ export default function GraphPage() {
               {opt.label}
             </button>
           ))}
+          </div>
         </div>
       </div>
 
@@ -215,6 +260,7 @@ export default function GraphPage() {
             nodes={nodes}
             edges={edges}
             filter={filter}
+            hideImageFiles={hideImageFiles}
             onNodeClick={handleNodeClick}
             selectedNodeId={selectedNodeId}
           />
@@ -343,6 +389,28 @@ export default function GraphPage() {
                     {!selectedNodeDetail.file_content && !selectedNodeDetail.canvas_url && (
                       <p className="text-[11px] text-muted-foreground/50">No file preview available.</p>
                     )}
+                  </div>
+                )}
+
+                {connectedNodes.length > 0 && (
+                  <div className="mt-3 pt-3 border-t border-white/[0.06] space-y-2">
+                    <p className="text-[10px] text-muted-foreground/50 uppercase tracking-wider">
+                      Connected To
+                    </p>
+                    <div className="space-y-1.5 max-h-44 overflow-y-auto">
+                      {connectedNodes.map((connected) => (
+                        <button
+                          key={connected.node.id}
+                          onClick={() => setSelectedNodeId(connected.node.id)}
+                          className="w-full text-left rounded-md border border-white/[0.08] bg-white/[0.02] px-2.5 py-2 hover:bg-white/[0.05] transition-colors"
+                        >
+                          <p className="text-xs text-foreground/90 truncate">{connected.node.title}</p>
+                          <p className="text-[10px] text-muted-foreground/60 mt-0.5 capitalize">
+                            {connected.node.type} • {connected.edgeLabel}
+                          </p>
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
