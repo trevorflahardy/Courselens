@@ -11,8 +11,12 @@ import type {
   RubricCriterion,
 } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { SearchableMultiSelect } from "@/components/ui/searchable-multi-select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
+  Link2,
   ArrowLeft,
   FileText,
   BookOpen,
@@ -122,6 +126,13 @@ export default function AssignmentDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
   const [activeTab, setActiveTab] = useState<string>("findings");
+  const [assignmentOptions, setAssignmentOptions] = useState<Array<{ value: string; label: string; meta?: string | null }>>([]);
+  const [selectedAssignmentLinks, setSelectedAssignmentLinks] = useState<string[]>([]);
+  const [linkWeek, setLinkWeek] = useState("");
+  const [linkModule, setLinkModule] = useState("");
+  const [linkSaving, setLinkSaving] = useState(false);
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const [linkSuccess, setLinkSuccess] = useState<string | null>(null);
 
   // Fetch data
   useEffect(() => {
@@ -135,6 +146,42 @@ export default function AssignmentDetailPage() {
         if (cancelled) return;
         setNode(nodeData);
         setFindings(findingsData.filter((f) => f.status === "active"));
+        setLinkWeek(nodeData.week !== null ? String(nodeData.week) : "");
+        setLinkModule(nodeData.module ?? "");
+
+        Promise.all([api.listNodes({ type: "assignment" }), api.getNodeLinks(nodeData.id)])
+          .then(([assignments, links]) => {
+            if (cancelled) return;
+
+            setAssignmentOptions(
+              assignments
+                .filter((assignment) => assignment.id !== nodeData.id)
+                .map((assignment) => ({
+                  value: assignment.id,
+                  label: assignment.title,
+                  meta: assignment.week
+                    ? `Week ${assignment.week}${assignment.module ? ` • ${assignment.module}` : ""}`
+                    : (assignment.module ?? "No week"),
+                })),
+            );
+
+            const existing = links
+              .filter(
+                (link) =>
+                  link.target_id === nodeData.id
+                  && (link.link_type === "file" || link.link_type === "assignment"),
+              )
+              .map((link) => link.source_id)
+              .filter((sourceId) => sourceId !== nodeData.id);
+
+            setSelectedAssignmentLinks(existing);
+          })
+          .catch(() => {
+            if (cancelled) return;
+            setAssignmentOptions([]);
+            setSelectedAssignmentLinks([]);
+          });
+
         // Fetch rubric if node has one
         if (nodeData.rubric_id) {
           api
@@ -190,6 +237,50 @@ export default function AssignmentDetailPage() {
       }, 2000);
     } catch {
       setAuditLoading(false);
+    }
+  };
+
+  const handleSaveLinking = async () => {
+    if (!node) return;
+    setLinkSaving(true);
+    setLinkError(null);
+    setLinkSuccess(null);
+
+    try {
+      const parsedWeek = linkWeek.trim() ? Number(linkWeek) : null;
+      if (parsedWeek !== null && (!Number.isInteger(parsedWeek) || parsedWeek < 1)) {
+        throw new Error("Week must be a whole number greater than zero.");
+      }
+
+      if (!linkModule.trim() && parsedWeek === null && selectedAssignmentLinks.length === 0) {
+        throw new Error("Set a week/module or select at least one linked assignment.");
+      }
+
+      await api.updateNode(node.id, {
+        week: parsedWeek,
+        module: linkModule.trim() || null,
+      });
+
+      if (selectedAssignmentLinks.length > 0) {
+        const linkType = node.type === "file" ? "file" : "assignment";
+        await Promise.all(
+          selectedAssignmentLinks.map((assignmentId) =>
+            api.createNodeLink(assignmentId, node.id, linkType),
+          ),
+        );
+      }
+
+      const refreshedNode = await api.getNode(node.id);
+      setNode(refreshedNode);
+      setLinkSuccess(
+        selectedAssignmentLinks.length > 1
+          ? `Saved. Linked to ${selectedAssignmentLinks.length} assignments.`
+          : "Linking details updated.",
+      );
+    } catch (err) {
+      setLinkError(err instanceof Error ? err.message : "Failed to update linking details");
+    } finally {
+      setLinkSaving(false);
     }
   };
 
@@ -333,6 +424,65 @@ export default function AssignmentDetailPage() {
           </button>
         </div>
       </div>
+
+      {(node.type === "file" || node.week === null) && (
+        <div className="bg-secondary/30 border border-secondary/55 rounded-xl p-5 space-y-4">
+          <div>
+            <h2 className="text-sm font-semibold text-foreground/90">Assignment & Module Linking</h2>
+            <p className="text-xs text-muted-foreground mt-1">
+              Assign this item to a week/module and link it to one or more assignments.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <Input
+              value={linkWeek}
+              onChange={(event) => setLinkWeek(event.target.value)}
+              placeholder="Week (e.g. 5)"
+              className="glass-input"
+            />
+            <Input
+              value={linkModule}
+              onChange={(event) => setLinkModule(event.target.value)}
+              placeholder="Module name"
+              className="glass-input"
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <p className="text-xs text-muted-foreground uppercase tracking-wide">
+              Linked assignments (multi-select)
+            </p>
+            <SearchableMultiSelect
+              options={assignmentOptions}
+              value={selectedAssignmentLinks}
+              onValueChange={setSelectedAssignmentLinks}
+              placeholder="Search and select assignments..."
+              emptyLabel="No assignment matches your search"
+            />
+            <p className="text-[11px] text-muted-foreground">Multiple links are supported.</p>
+          </div>
+
+          {linkError && <p className="text-xs text-destructive">{linkError}</p>}
+          {linkSuccess && <p className="text-xs text-emerald-300">{linkSuccess}</p>}
+
+          <div className="flex justify-end">
+            <Button onClick={handleSaveLinking} disabled={linkSaving}>
+              {linkSaving ? (
+                <>
+                  <Loader2 className="size-4 mr-1.5 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                <>
+                  <Link2 className="size-4 mr-1.5" />
+                  Save Linking
+                </>
+              )}
+            </Button>
+          </div>
+        </div>
+      )}
 
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>

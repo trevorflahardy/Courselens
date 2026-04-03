@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, ConfigDict
 
-from backend.models.node import CourseNode, CourseNodeSummary, NodeStatus, NodeType
+from backend.models.node import CourseNode, CourseNodeSummary, NodeLink, NodeStatus, NodeType
 from backend.services import node_service
 
 router = APIRouter(prefix="/api/nodes", tags=["nodes"])
@@ -89,3 +89,11 @@ async def create_node_link(node_id: str, body: NodeLinkCreate) -> dict[str, str]
         "target_id": link.target_id,
         "link_type": link.link_type,
     }
+
+
+@router.get("/{node_id}/links")
+async def list_node_links(node_id: str) -> list[NodeLink]:
+    node = await node_service.get_node(node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail=f"Node '{node_id}' not found")
+    return await node_service.get_node_links(node_id)

@@ -122,6 +122,17 @@ async def test_create_node_link_404(client: AsyncClient) -> None:
     assert r.status_code == 404
 
 
+async def test_list_node_links(client: AsyncClient) -> None:
+    r = await client.get("/api/nodes/assign-01/links")
+    assert r.status_code == 200
+    assert isinstance(r.json(), list)
+
+
+async def test_list_node_links_404(client: AsyncClient) -> None:
+    r = await client.get("/api/nodes/nonexistent/links")
+    assert r.status_code == 404
+
+
 # ---------------------------------------------------------------------------
 # Findings
 # ---------------------------------------------------------------------------

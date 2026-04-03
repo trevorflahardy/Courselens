@@ -25,6 +25,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 import type {
   CourseNode,
   CourseNodeSummary,
+  NodeLink,
   Finding,
   GraphState,
   AuditRun,
@@ -43,6 +44,8 @@ export const api = {
   },
 
   getNode: (id: string) => request<CourseNode>(`/api/nodes/${id}`),
+
+  getNodeLinks: (id: string) => request<NodeLink[]>(`/api/nodes/${id}/links`),
 
   updateNode: (id: string, body: Partial<CourseNode>) =>
     request<CourseNode>(`/api/nodes/${id}`, {

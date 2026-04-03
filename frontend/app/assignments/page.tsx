@@ -5,7 +5,9 @@ import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import type { CourseNodeSummary, NodeType, NodeStatus } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { SearchableMultiSelect } from "@/components/ui/searchable-multi-select";
 import {
   Select,
   SelectContent,
@@ -14,6 +16,15 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  Link2,
   FileText,
   BookOpen,
   ClipboardCheck,
@@ -122,6 +133,14 @@ export default function AssignmentsPage() {
   const [typeFilter, setTypeFilter] = useState("all");
   const [severityFilter, setSeverityFilter] = useState("all");
   const [weekFilter, setWeekFilter] = useState("all");
+  const [assignDialogOpen, setAssignDialogOpen] = useState(false);
+  const [selectedUnassigned, setSelectedUnassigned] = useState<CourseNodeSummary | null>(null);
+  const [assignWeek, setAssignWeek] = useState("");
+  const [assignModule, setAssignModule] = useState("");
+  const [selectedAssignmentLinks, setSelectedAssignmentLinks] = useState<string[]>([]);
+  const [assignSaving, setAssignSaving] = useState(false);
+  const [assignError, setAssignError] = useState<string | null>(null);
+  const [assignSuccess, setAssignSuccess] = useState<string | null>(null);
 
   // Debounce search
   useEffect(() => {
@@ -224,6 +243,96 @@ export default function AssignmentsPage() {
     setWeekFilter("all");
   }, []);
 
+  const assignmentOptions = useMemo(() => {
+    return nodes
+      .filter((node) => node.type === "assignment")
+      .map((node) => ({
+        value: node.id,
+        label: node.title,
+        meta: node.week ? `Week ${node.week}${node.module ? ` • ${node.module}` : ""}` : (node.module ?? "No week"),
+      }));
+  }, [nodes]);
+
+  const openAssignDialog = useCallback(
+    async (node: CourseNodeSummary) => {
+      setSelectedUnassigned(node);
+      setAssignWeek(node.week ? String(node.week) : "");
+      setAssignModule(node.module ?? "");
+      setAssignError(null);
+      setAssignSuccess(null);
+      setAssignDialogOpen(true);
+
+      try {
+        const links = await api.getNodeLinks(node.id);
+        const existing = links
+          .filter(
+            (link) =>
+              link.target_id === node.id
+              && (link.link_type === "file" || link.link_type === "assignment"),
+          )
+          .map((link) => link.source_id)
+          .filter((sourceId) => sourceId !== node.id);
+        setSelectedAssignmentLinks(existing);
+      } catch {
+        setSelectedAssignmentLinks([]);
+      }
+    },
+    [],
+  );
+
+  const handleSaveAssignment = useCallback(async () => {
+    if (!selectedUnassigned) return;
+
+    setAssignSaving(true);
+    setAssignError(null);
+    setAssignSuccess(null);
+
+    try {
+      const parsedWeek = assignWeek.trim() ? Number(assignWeek) : null;
+      if (parsedWeek !== null && (!Number.isInteger(parsedWeek) || parsedWeek < 1)) {
+        throw new Error("Week must be a whole number greater than zero.");
+      }
+
+      const primaryAssignment = nodes.find((n) => n.id === selectedAssignmentLinks[0]);
+      const effectiveWeek = parsedWeek ?? primaryAssignment?.week ?? null;
+      const effectiveModule = assignModule.trim() || primaryAssignment?.module || null;
+
+      if (effectiveWeek === null && !effectiveModule && selectedAssignmentLinks.length === 0) {
+        throw new Error("Select at least one linked assignment or set week/module.");
+      }
+
+      await api.updateNode(selectedUnassigned.id, {
+        week: effectiveWeek,
+        module: effectiveModule,
+      });
+
+      if (selectedAssignmentLinks.length > 0) {
+        const linkType = selectedUnassigned.type === "file" ? "file" : "assignment";
+        await Promise.all(
+          selectedAssignmentLinks.map((assignmentId) =>
+            api.createNodeLink(assignmentId, selectedUnassigned.id, linkType),
+          ),
+        );
+      }
+
+      const refreshed = await api.listNodes();
+      setNodes(refreshed);
+      setAssignSuccess(
+        selectedAssignmentLinks.length > 1
+          ? `Saved. Linked to ${selectedAssignmentLinks.length} assignments.`
+          : "Saved assignment updates.",
+      );
+
+      window.setTimeout(() => {
+        setAssignDialogOpen(false);
+      }, 700);
+    } catch (err) {
+      setAssignError(err instanceof Error ? err.message : "Failed to save assignment updates");
+    } finally {
+      setAssignSaving(false);
+    }
+  }, [selectedUnassigned, assignWeek, assignModule, nodes, selectedAssignmentLinks]);
+
   // ---------------------------------------------------------------------------
   // Render
   // ---------------------------------------------------------------------------
@@ -239,22 +348,22 @@ export default function AssignmentsPage() {
       </div>
 
       {/* Filter bar */}
-      <div className="sticky top-0 z-20 -mx-8 px-8 py-3 bg-background/60 backdrop-blur-xl border-b border-white/[0.06]">
+      <div className="sticky top-0 z-20 -mx-8 border-b border-white/12 bg-background/75 px-8 py-3 backdrop-blur-xl">
         <div className="flex flex-wrap items-center gap-3">
           {/* Search */}
-          <div className="relative flex-1 min-w-[200px] max-w-sm">
+          <div className="relative flex-1 min-w-50 max-w-sm">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
             <Input
               placeholder="Search assignments..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="pl-9 bg-white/[0.03] border-white/[0.08]"
+              className="pl-9 glass-input"
             />
           </div>
 
           {/* Type filter */}
           <Select value={typeFilter} onValueChange={(v) => setTypeFilter(v ?? "all")}>
-            <SelectTrigger className="bg-white/[0.03] border-white/[0.08] min-w-[130px]">
+            <SelectTrigger className="glass-input min-w-32.5">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -268,7 +377,7 @@ export default function AssignmentsPage() {
 
           {/* Severity filter */}
           <Select value={severityFilter} onValueChange={(v) => setSeverityFilter(v ?? "all")}>
-            <SelectTrigger className="bg-white/[0.03] border-white/[0.08] min-w-[140px]">
+            <SelectTrigger className="glass-input min-w-35">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -282,7 +391,7 @@ export default function AssignmentsPage() {
 
           {/* Week filter */}
           <Select value={weekFilter} onValueChange={(v) => setWeekFilter(v ?? "all")}>
-            <SelectTrigger className="bg-white/[0.03] border-white/[0.08] min-w-[120px]">
+            <SelectTrigger className="glass-input min-w-30">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -326,7 +435,7 @@ export default function AssignmentsPage() {
           <Loader2 className="size-6 animate-spin text-primary/60" />
         </div>
       ) : error ? (
-        <div className="rounded-xl bg-white/[0.03] border border-destructive/20 p-6 text-center">
+        <div className="rounded-xl border border-destructive/20 bg-white/3 p-6 text-center">
           <p className="text-sm text-destructive">{error}</p>
         </div>
       ) : filtered.length === 0 ? (
@@ -334,10 +443,87 @@ export default function AssignmentsPage() {
       ) : (
         <div className="space-y-8">
           {grouped.map(([week, items]) => (
-            <WeekGroup key={week ?? "none"} week={week} items={items} router={router} />
+            <WeekGroup
+              key={week ?? "none"}
+              week={week}
+              items={items}
+              router={router}
+              onAssign={openAssignDialog}
+            />
           ))}
         </div>
       )}
+
+      <Dialog open={assignDialogOpen} onOpenChange={setAssignDialogOpen}>
+        <DialogContent className="max-w-xl border border-white/16 bg-[oklch(0.18_0.02_272/0.96)]">
+          <DialogHeader>
+            <DialogTitle>Assign Unclassified Item</DialogTitle>
+            <DialogDescription>
+              Set week/module and optionally link this file to one or more assignments.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            <div className="rounded-lg border border-white/14 bg-secondary/30 px-3 py-2">
+              <p className="text-xs text-muted-foreground">Selected item</p>
+              <p className="text-sm text-foreground mt-0.5 truncate">{selectedUnassigned?.title}</p>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <Input
+                value={assignWeek}
+                onChange={(event) => setAssignWeek(event.target.value)}
+                placeholder="Week (e.g. 8)"
+                className="glass-input"
+              />
+              <Input
+                value={assignModule}
+                onChange={(event) => setAssignModule(event.target.value)}
+                placeholder="Module name"
+                className="glass-input"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <p className="text-xs text-muted-foreground uppercase tracking-wide">
+                Linked assignments (multi-select)
+              </p>
+              <SearchableMultiSelect
+                options={assignmentOptions.filter((option) => option.value !== selectedUnassigned?.id)}
+                value={selectedAssignmentLinks}
+                onValueChange={setSelectedAssignmentLinks}
+                placeholder="Search and select assignments..."
+                emptyLabel="No assignment matches your search"
+              />
+              <p className="text-[11px] text-muted-foreground">
+                You can select multiple assignments. Existing links are preserved.
+              </p>
+            </div>
+
+            {assignError && <p className="text-xs text-destructive">{assignError}</p>}
+            {assignSuccess && <p className="text-xs text-emerald-300">{assignSuccess}</p>}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAssignDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleSaveAssignment} disabled={assignSaving}>
+              {assignSaving ? (
+                <>
+                  <Loader2 className="mr-1.5 size-4 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                <>
+                  <Link2 className="mr-1.5 size-4" />
+                  Save Assignment
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -355,7 +541,7 @@ function EmptyState({
 }) {
   return (
     <div className="flex flex-col items-center justify-center py-20 space-y-4">
-      <div className="rounded-full bg-white/[0.03] border border-white/[0.08] p-4">
+      <div className="rounded-full border border-white/8 bg-white/3 p-4">
         <PackageOpen className="size-8 text-muted-foreground/60" />
       </div>
       <div className="text-center space-y-1.5">
@@ -384,10 +570,12 @@ function WeekGroup({
   week,
   items,
   router,
+  onAssign,
 }: {
   week: number | null;
   items: CourseNodeSummary[];
   router: ReturnType<typeof useRouter>;
+  onAssign?: (node: CourseNodeSummary) => void;
 }) {
   return (
     <div className="space-y-3">
@@ -399,7 +587,7 @@ function WeekGroup({
         <span className="text-xs text-muted-foreground tabular-nums">
           {items.length} item{items.length !== 1 ? "s" : ""}
         </span>
-        <div className="flex-1 h-px bg-white/[0.06]" />
+        <div className="flex-1 h-px bg-white/12" />
       </div>
 
       {/* Card grid */}
@@ -409,6 +597,7 @@ function WeekGroup({
             key={node.id}
             node={node}
             onClick={() => router.push(`/assignments/${node.id}`)}
+            onAssign={week === null ? onAssign : undefined}
           />
         ))}
       </div>
@@ -419,18 +608,28 @@ function WeekGroup({
 function AssignmentCard({
   node,
   onClick,
+  onAssign,
 }: {
   node: CourseNodeSummary;
   onClick: () => void;
+  onAssign?: (node: CourseNodeSummary) => void;
 }) {
   return (
-    <button
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onClick}
-      className="group text-left bg-white/[0.03] backdrop-blur-sm border border-white/[0.08] rounded-xl p-4 hover:bg-white/[0.05] hover:border-white/[0.12] hover:translate-y-[-1px] transition-all duration-200 cursor-pointer focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:outline-none"
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onClick();
+        }
+      }}
+      className="group cursor-pointer rounded-xl border border-secondary/55 bg-secondary/28 p-4 text-left backdrop-blur-sm transition-all duration-200 hover:-translate-y-px hover:border-secondary/75 hover:bg-secondary/38 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
     >
       <div className="flex items-start gap-3">
         {/* Type icon */}
-        <div className="mt-0.5 rounded-lg bg-white/[0.05] border border-white/[0.08] p-2 text-muted-foreground group-hover:text-foreground/80 transition-colors">
+        <div className="mt-0.5 rounded-lg bg-secondary/50 border border-secondary/60 p-2 text-muted-foreground group-hover:text-foreground/80 transition-colors">
           {typeIcon(node.type)}
         </div>
 
@@ -451,7 +650,7 @@ function AssignmentCard({
             <span
               className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium ${
                 node.status === "unaudited"
-                  ? "bg-white/[0.04] text-muted-foreground border-white/[0.08]"
+                  ? "bg-muted/45 text-muted-foreground border-muted/40"
                   : severityClass(node.status)
               }`}
             >
@@ -469,9 +668,22 @@ function AssignmentCard({
             <span className="text-[10px] text-muted-foreground/60 capitalize">
               {node.type}
             </span>
+
+            {onAssign && (
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onAssign(node);
+                }}
+                className="ml-auto inline-flex items-center rounded-md border border-primary/35 bg-primary/14 px-2 py-1 text-[10px] text-primary hover:bg-primary/24 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
+              >
+                Assign
+              </button>
+            )}
           </div>
         </div>
       </div>
-    </button>
+    </div>
   );
 }
