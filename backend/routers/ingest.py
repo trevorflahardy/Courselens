@@ -1,10 +1,13 @@
-"""Ingest API routes — ZIP import and graph rebuild."""
+"""Ingest API routes — ZIP import, Canvas live sync, and graph rebuild."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import tempfile
+import uuid
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
@@ -16,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/ingest", tags=["ingest"])
 
-# Simple status tracking
+# Simple status tracking — includes stage and last_run after a sync completes
 _ingest_status: dict[str, object] = {"status": "idle", "message": "No ingestion in progress"}
 
 
@@ -81,15 +84,157 @@ async def api_rebuild_graph() -> dict[str, object]:
 
 @router.post("/course")
 async def ingest_course() -> dict[str, str]:
-    """Trigger course ingestion from Canvas via MCP.
+    """Trigger Canvas live sync. Fires a background Claude subprocess; poll /status for progress."""
+    global _ingest_status
 
-    Note: Canvas MCP ingestion is orchestrated by Claude Code subprocess,
-    not directly by this API. This endpoint will trigger that process.
-    """
-    raise HTTPException(
-        status_code=501,
-        detail="Canvas live ingestion is orchestrated via Claude Code CLI. Use /ingest-course slash command.",
-    )
+    if _ingest_status.get("status") == "running":
+        return {"status": "already_running"}
+
+    _ingest_status = {
+        "status": "running",
+        "stage": "fetching_modules",
+        "message": "Canvas sync starting...",
+    }
+    asyncio.create_task(_run_canvas_sync())
+    return {"status": "started"}
+
+
+def _build_canvas_sync_prompt(course_id: str) -> str:
+    return f"""You are ingesting Canvas course {course_id} into the audit database.
+
+Follow these steps in order:
+
+1. Call mcp__canvas-api__get_course_structure with course_id="{course_id}" to get all modules and items.
+
+2. For each module item, fetch full details:
+   - Assignments / Quizzes: call mcp__canvas-api__get_assignment_details
+   - Pages / WikiPages: call mcp__canvas-api__get_page_content
+   - Files: use the title and URL as-is
+
+3. Upsert each item using nodes_write:
+   - node_id: "assignment-{{canvas_id}}", "page-{{page_url_slug}}", "file-{{canvas_id}}", "quiz-{{canvas_id}}"
+   - source: "canvas_mcp"
+   - week: parse from the module name (e.g. "Week 5 - Design" → week=5), else null
+   - module: the full module name string
+   - canvas_url: the item HTML URL
+   - If re-syncing, nodes_write will upsert and overwrite existing data.
+
+4. For each assignment that has a rubric_id, call mcp__canvas-api__get_rubric_details, upsert a rubric node (type="rubric"), then call nodes_link to connect assignment → rubric.
+
+Process ALL modules and ALL items — do not skip any.
+
+When finished, output exactly this JSON on its own line:
+{{"status":"done","modules":N,"assignments":N,"pages":N,"files":N,"rubrics":N}}"""
+
+
+async def _run_canvas_sync() -> None:
+    """Background task: spawns Claude to sync Canvas data into the audit DB via MCP tools."""
+    global _ingest_status
+    from backend.claude_runner import get_run_state, start_audit_run, tail_run
+    from backend.config import settings
+
+    course_id = settings.canvas_course_id
+    if not course_id:
+        logger.error("Canvas sync aborted: canvas_course_id is not set in .env")
+        _ingest_status = {
+            "status": "error",
+            "stage": "error",
+            "message": "canvas_course_id not set in .env",
+        }
+        return
+
+    run_id = f"canvas-sync-{uuid.uuid4().hex[:8]}"
+    logger.info("Canvas sync starting: run_id=%s course_id=%s", run_id, course_id)
+
+    try:
+        state = await start_audit_run(
+            run_id=run_id,
+            assignment_id="canvas-sync",
+            prompt=_build_canvas_sync_prompt(course_id),
+            allowed_tools=None,  # allow all MCP tools
+        )
+
+        if state.status == "error":
+            # start_audit_run already logged the cause (e.g. CLI not found)
+            last_event = state.events[-1] if state.events else {}
+            msg = last_event.get("message", "Failed to start Claude subprocess")
+            logger.error("Canvas sync could not start subprocess: %s", msg)
+            _ingest_status = {"status": "error", "stage": "error", "message": str(msg)}
+            return
+
+        logger.debug("Claude subprocess started: pid=%s", state.process.pid if state.process else "N/A")
+
+        _KEYWORD_STAGES: dict[str, str] = {
+            "rubric": "processing_rubrics",
+            "assignment": "extracting_assignments",
+            "page": "extracting_assignments",
+            "graph": "building_graph",
+            "edge": "building_graph",
+        }
+
+        event_count = 0
+        async for event in tail_run(run_id):
+            event_count += 1
+            event_type = event.get("type", "unknown")
+            logger.debug("Canvas sync event #%d: type=%s", event_count, event_type)
+
+            if event_type == "error":
+                logger.error("Claude reported error during canvas sync: %s", event.get("message", ""))
+
+            if event_type == "assistant":
+                msg = event.get("message")
+                content = msg.get("content", []) if isinstance(msg, dict) else []
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            text = block.get("text", "").lower()
+                            logger.debug("Claude text snippet: %.120s", text)
+                            for kw, stage in _KEYWORD_STAGES.items():
+                                if kw in text:
+                                    logger.info("Canvas sync stage transition → %s", stage)
+                                    _ingest_status = {
+                                        "status": "running",
+                                        "stage": stage,
+                                        "message": f"Running: {stage.replace('_', ' ')}",
+                                    }
+                                    break
+
+        logger.info("Canvas sync tail_run exhausted after %d events", event_count)
+
+        run = get_run_state(run_id)
+        logger.info(
+            "Canvas sync final run state: status=%s events=%d",
+            run.status if run else "NOT_FOUND",
+            len(run.events) if run else 0,
+        )
+        if run and run.status == "done":
+            _ingest_status = {
+                "status": "done",
+                "stage": "done",
+                "last_run": datetime.now().isoformat(),
+                "message": "Canvas sync complete",
+            }
+        else:
+            # Collect the last error event message for a more useful status
+            error_msg = "Canvas sync failed — check backend logs"
+            if run:
+                for ev in reversed(run.events):
+                    if ev.get("type") == "error" and ev.get("message"):
+                        error_msg = str(ev["message"])
+                        break
+            logger.error("Canvas sync did not complete successfully: %s", error_msg)
+            _ingest_status = {
+                "status": "error",
+                "stage": "error",
+                "message": error_msg,
+            }
+    except Exception as exc:
+        logger.exception("Canvas sync background task raised an unhandled exception")
+        _ingest_status = {
+            "status": "error",
+            "stage": "error",
+            "message": str(exc),
+        }
 
 
 @router.get("/status")
