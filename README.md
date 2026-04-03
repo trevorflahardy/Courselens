@@ -4,6 +4,9 @@ An AI-powered course audit tool that gives instructors a **holistic view** of th
 
 Built for **EGN 3000L: Foundations of Engineering Lab** at the University of South Florida.
 
+<img width="1265" height="760" alt="image" src="https://github.com/user-attachments/assets/633c5d4e-5aaf-48e2-8205-01a5e7157650" />
+<img width="1268" height="754" alt="image" src="https://github.com/user-attachments/assets/f7fccd56-a7b2-43bf-ad17-48f02163144f" />
+
 ---
 
 ## The Problem
