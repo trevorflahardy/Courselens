@@ -95,7 +95,7 @@ async def upsert_node(node_id: str, data: dict[str, object]) -> CourseNode:
             values,
         )
         await db.commit()
-        return (await get_node(node_id))  # type: ignore[return-value]
+        return await get_node(node_id)  # type: ignore[return-value]
 
     # Insert new node
     data["id"] = node_id
@@ -114,7 +114,7 @@ async def upsert_node(node_id: str, data: dict[str, object]) -> CourseNode:
         list(db_data.values()),
     )
     await db.commit()
-    return (await get_node(node_id))  # type: ignore[return-value]
+    return await get_node(node_id)  # type: ignore[return-value]
 
 
 async def get_nodes_many(ids: list[str]) -> list[CourseNode]:
