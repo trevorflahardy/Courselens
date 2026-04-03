@@ -162,6 +162,9 @@ export default function GraphPage() {
   const totalEdges = edges.length;
   const gapCount = nodes.filter((n) => n.status === "gap").length;
   const orphanCount = nodes.filter((n) => n.status === "orphan").length;
+  const assignmentCount = nodes.filter((n) => n.type === "assignment").length;
+  const fileCount = nodes.filter((n) => n.type === "file").length;
+  const lectureCount = nodes.filter((n) => n.type === "lecture").length;
 
   const connectedNodes = useMemo(() => {
     if (!selectedNodeId) return [];
@@ -218,6 +221,21 @@ export default function GraphPage() {
                 {orphanCount} orphans
               </Badge>
             )}
+            {assignmentCount > 0 && (
+              <Badge variant="outline" className="text-[10px]">
+                {assignmentCount} assignments
+              </Badge>
+            )}
+            {fileCount > 0 && (
+              <Badge variant="outline" className="text-[10px]">
+                {fileCount} files
+              </Badge>
+            )}
+            {lectureCount > 0 && (
+              <Badge variant="outline" className="text-[10px]">
+                {lectureCount} lectures
+              </Badge>
+            )}
           </div>
         </div>
 
@@ -232,7 +250,7 @@ export default function GraphPage() {
               className={`
                 px-3 py-1.5 rounded-md text-[11px] font-medium transition-all duration-150 border
                 ${
-                  typeMenuOpen || hiddenNodeTypes.length > 0
+                  typeMenuOpen || hiddenNodeTypes.length > 0 || hideImageFiles
                     ? "bg-primary/20 text-primary border-primary/40"
                     : "bg-white/3 text-muted-foreground border-white/10 hover:text-foreground"
                 }
@@ -247,6 +265,30 @@ export default function GraphPage() {
                 role="menu"
                 className="absolute right-0 mt-2 w-64 rounded-xl border border-white/8 bg-black/75 backdrop-blur-xl p-3 shadow-2xl z-30"
               >
+                <div className="mb-2.5 pb-2.5 border-b border-white/8">
+                  <p className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider mb-1.5">
+                    Image Files
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setHideImageFiles((prev) => !prev)}
+                    className={`
+                      w-full flex items-center justify-between rounded-lg border px-2.5 py-2 text-left transition-colors
+                      ${
+                        hideImageFiles
+                          ? "border-primary/30 bg-primary/10 text-foreground"
+                          : "border-white/8 bg-white/2 text-muted-foreground/55"
+                      }
+                    `}
+                    title="Hide image file nodes (png, jpg, gif, svg, webp, etc.)"
+                  >
+                    <span className="text-[11px]">Image nodes</span>
+                    <span className="text-[10px] font-medium">
+                      {hideImageFiles ? "Hidden" : "Visible"}
+                    </span>
+                  </button>
+                </div>
+
                 <div className="flex items-center justify-between mb-2">
                   <p className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider">
                     Node Visibility
@@ -297,21 +339,6 @@ export default function GraphPage() {
               </div>
             )}
           </div>
-
-          <button
-            onClick={() => setHideImageFiles((prev) => !prev)}
-            className={`
-              px-3 py-1.5 rounded-md text-[11px] font-medium transition-all duration-150 border
-              ${
-                hideImageFiles
-                  ? "bg-primary/20 text-primary border-primary/40"
-                  : "bg-white/3 text-muted-foreground border-white/10 hover:text-foreground"
-              }
-            `}
-            title="Hide image file nodes (png, jpg, gif, svg, webp, etc.)"
-          >
-            {hideImageFiles ? "Images Hidden" : "Show Images"}
-          </button>
 
           <div className="flex items-center gap-1 bg-white/3 rounded-lg p-1 border border-white/6">
           {FILTER_OPTIONS.map((opt) => (

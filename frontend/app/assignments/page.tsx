@@ -68,6 +68,29 @@ const WEEK_OPTIONS: { value: string; label: string }[] = [
   { value: "none", label: "No Week" },
 ];
 
+const TYPE_PRIORITY: Record<NodeType, number> = {
+  assignment: 0,
+  page: 1,
+  file: 2,
+  lecture: 3,
+  announcement: 4,
+  rubric: 5,
+};
+
+function isLinkableNodeType(type: NodeType): boolean {
+  return type === "assignment" || type === "page" || type === "file";
+}
+
+function canCreateFileLink(source: CourseNodeSummary, target: CourseNodeSummary): boolean {
+  if (source.id === target.id) return false;
+  const sourceIsFile = source.type === "file";
+  const targetIsFile = target.type === "file";
+  if (sourceIsFile === targetIsFile) return false;
+
+  const nonFile = sourceIsFile ? target : source;
+  return nonFile.type === "assignment" || nonFile.type === "page";
+}
+
 function typeIcon(type: NodeType) {
   const cls = "size-4 shrink-0";
   switch (type) {
@@ -83,6 +106,40 @@ function typeIcon(type: NodeType) {
       return <Megaphone className={cls} />;
     case "file":
       return <File className={cls} />;
+  }
+}
+
+function typeLabel(type: NodeType): string {
+  switch (type) {
+    case "assignment":
+      return "Assignment";
+    case "page":
+      return "Page";
+    case "rubric":
+      return "Rubric";
+    case "lecture":
+      return "Lecture";
+    case "announcement":
+      return "Announcement";
+    case "file":
+      return "File";
+  }
+}
+
+function typePillClass(type: NodeType): string {
+  switch (type) {
+    case "assignment":
+      return "border-sky-400/30 bg-sky-400/10 text-sky-200";
+    case "file":
+      return "border-amber-400/30 bg-amber-400/10 text-amber-200";
+    case "lecture":
+      return "border-violet-400/30 bg-violet-400/10 text-violet-200";
+    case "page":
+      return "border-cyan-400/30 bg-cyan-400/10 text-cyan-200";
+    case "announcement":
+      return "border-pink-400/30 bg-pink-400/10 text-pink-200";
+    case "rubric":
+      return "border-emerald-400/30 bg-emerald-400/10 text-emerald-200";
   }
 }
 
@@ -156,6 +213,11 @@ export default function AssignmentsPage() {
   const [assignSaving, setAssignSaving] = useState(false);
   const [assignError, setAssignError] = useState<string | null>(null);
   const [assignSuccess, setAssignSuccess] = useState<string | null>(null);
+  const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
+  const [dragTargetId, setDragTargetId] = useState<string | null>(null);
+  const [dndSaving, setDndSaving] = useState(false);
+  const [dndMessage, setDndMessage] = useState<string | null>(null);
+  const [dndError, setDndError] = useState<string | null>(null);
 
   // Debounce search
   useEffect(() => {
@@ -207,8 +269,10 @@ export default function AssignmentsPage() {
     const bucketKey = (week: number | null, module: string | null) => `${week ?? "none"}::${module ?? ""}`;
     const map = new Map<string, GroupedNodes>();
     const primaryById = new Map(filtered.map((node) => [node.id, node]));
-    const assignmentById = new Map(
-      nodes.filter((node) => node.type === "assignment").map((node) => [node.id, node]),
+    const sourceById = new Map(
+      nodes
+        .filter((node) => node.type === "assignment" || node.type === "page")
+        .map((node) => [node.id, node]),
     );
 
     for (const n of filtered) {
@@ -237,18 +301,18 @@ export default function AssignmentsPage() {
       }
 
       const target = primaryById.get(link.target_id);
-      const sourceAssignment = assignmentById.get(link.source_id);
-      if (!target || !sourceAssignment) {
+      const sourceNode = sourceById.get(link.source_id);
+      if (!target || !sourceNode) {
         continue;
       }
 
-      const sourceWeek = sourceAssignment.week;
-      const sourceModule = sourceAssignment.module;
+      const sourceWeek = sourceNode.week;
+      const sourceModule = sourceNode.module;
       if (sourceWeek === target.week && sourceModule === target.module) {
         continue;
       }
 
-      const dedupeKey = `${target.id}::${sourceAssignment.id}`;
+      const dedupeKey = `${target.id}::${sourceNode.id}`;
       if (seenReferenceKeys.has(dedupeKey)) {
         continue;
       }
@@ -264,11 +328,11 @@ export default function AssignmentsPage() {
         });
       }
       map.get(groupKey)!.items.push({
-        key: `linked-${target.id}-${sourceAssignment.id}`,
+          key: `linked-${target.id}-${sourceNode.id}`,
         node: target,
         moduleLabel: sourceModule ?? target.module,
         isLinkedReference: true,
-        linkedViaAssignment: sourceAssignment.title,
+          linkedViaAssignment: sourceNode.title,
       });
     }
 
@@ -285,6 +349,8 @@ export default function AssignmentsPage() {
 
     for (const group of entries) {
       group.items.sort((a, b) => {
+        const typeOrderDiff = TYPE_PRIORITY[a.node.type] - TYPE_PRIORITY[b.node.type];
+        if (typeOrderDiff !== 0) return typeOrderDiff;
         if (a.isLinkedReference !== b.isLinkedReference) {
           return a.isLinkedReference ? 1 : -1;
         }
@@ -342,6 +408,85 @@ export default function AssignmentsPage() {
         meta: node.week ? `Week ${node.week}${node.module ? ` • ${node.module}` : ""}` : (node.module ?? "No week"),
       }));
   }, [nodes]);
+
+  const nodeById = useMemo(() => {
+    return new Map(nodes.map((node) => [node.id, node]));
+  }, [nodes]);
+
+  const handleDragStart = useCallback((node: CourseNodeSummary) => {
+    setDraggingNodeId(node.id);
+    setDragTargetId(null);
+    setDndMessage(null);
+    setDndError(null);
+  }, []);
+
+  const handleDragEnd = useCallback(() => {
+    setDraggingNodeId(null);
+    setDragTargetId(null);
+  }, []);
+
+  const handleDragTargetEnter = useCallback(
+    (targetNode: CourseNodeSummary) => {
+      if (!draggingNodeId) {
+        setDragTargetId(null);
+        return;
+      }
+      const sourceNode = nodeById.get(draggingNodeId);
+      if (!sourceNode || !canCreateFileLink(sourceNode, targetNode)) {
+        setDragTargetId(null);
+        return;
+      }
+      setDragTargetId(targetNode.id);
+    },
+    [draggingNodeId, nodeById],
+  );
+
+  const handleDropLink = useCallback(
+    async (targetNode: CourseNodeSummary) => {
+      if (!draggingNodeId) return;
+      const sourceNode = nodeById.get(draggingNodeId);
+      if (!sourceNode || !canCreateFileLink(sourceNode, targetNode)) {
+        return;
+      }
+
+      const fileNode = sourceNode.type === "file" ? sourceNode : targetNode;
+      const nonFileNode = sourceNode.type === "file" ? targetNode : sourceNode;
+      const alreadyLinked = nodeLinks.some(
+        (link) =>
+          link.link_type === "file"
+          && link.source_id === nonFileNode.id
+          && link.target_id === fileNode.id,
+      );
+
+      if (alreadyLinked) {
+        setDndMessage(`Already linked: ${nonFileNode.title} -> ${fileNode.title}`);
+        return;
+      }
+
+      setDndSaving(true);
+      setDndError(null);
+      setDndMessage(null);
+      try {
+        await api.createNodeLink(nonFileNode.id, fileNode.id, "file");
+        setNodeLinks((prev) => [
+          ...prev,
+          {
+            source_id: nonFileNode.id,
+            target_id: fileNode.id,
+            link_type: "file",
+          },
+        ]);
+        setDndMessage(`Linked ${fileNode.title} to ${nonFileNode.title}`);
+      } catch (err) {
+        setDndError(err instanceof Error ? err.message : "Failed to create link");
+      } finally {
+        setDndSaving(false);
+        setDraggingNodeId(null);
+        setDragTargetId(null);
+      }
+    },
+    [draggingNodeId, nodeById, nodeLinks],
+  );
 
   const openAssignDialog = useCallback(
     async (node: CourseNodeSummary) => {
@@ -520,6 +665,15 @@ export default function AssignmentsPage() {
       </div>
 
       {/* Content */}
+      <div className="rounded-xl border border-white/12 bg-secondary/20 px-3 py-2.5 space-y-1">
+        <p className="text-xs text-muted-foreground/80">
+          Drag a file card onto an assignment/page card (or drag assignment/page onto a file) to create a link.
+        </p>
+        {dndSaving && <p className="text-xs text-primary">Creating link...</p>}
+        {dndMessage && <p className="text-xs text-emerald-300">{dndMessage}</p>}
+        {dndError && <p className="text-xs text-destructive">{dndError}</p>}
+      </div>
+
       {loading ? (
         <div className="flex items-center justify-center py-20">
           <Loader2 className="size-6 animate-spin text-primary/60" />
@@ -540,6 +694,12 @@ export default function AssignmentsPage() {
               items={group.items}
               router={router}
               onAssign={openAssignDialog}
+              draggingNodeId={draggingNodeId}
+              dragTargetId={dragTargetId}
+              onCardDragStart={handleDragStart}
+              onCardDragEnd={handleDragEnd}
+              onCardDragEnter={handleDragTargetEnter}
+              onCardDrop={handleDropLink}
             />
           ))}
         </div>
@@ -663,12 +823,24 @@ function WeekGroup({
   items,
   router,
   onAssign,
+  draggingNodeId,
+  dragTargetId,
+  onCardDragStart,
+  onCardDragEnd,
+  onCardDragEnter,
+  onCardDrop,
 }: {
   week: number | null;
   module: string | null;
   items: DisplayNode[];
   router: ReturnType<typeof useRouter>;
   onAssign?: (node: CourseNodeSummary) => void;
+  draggingNodeId: string | null;
+  dragTargetId: string | null;
+  onCardDragStart: (node: CourseNodeSummary) => void;
+  onCardDragEnd: () => void;
+  onCardDragEnter: (node: CourseNodeSummary) => void;
+  onCardDrop: (node: CourseNodeSummary) => void;
 }) {
   return (
     <div className="space-y-3">
@@ -694,6 +866,17 @@ function WeekGroup({
             linkedViaAssignment={item.linkedViaAssignment}
             onClick={() => router.push(`/assignments/${item.node.id}`)}
             onAssign={!item.isLinkedReference && week === null ? onAssign : undefined}
+            isDragSource={!item.isLinkedReference && isLinkableNodeType(item.node.type)}
+            isDragActive={draggingNodeId === item.node.id}
+              isDropTarget={
+                !item.isLinkedReference
+                && dragTargetId === item.node.id
+                && draggingNodeId !== item.node.id
+              }
+            onDragStart={() => onCardDragStart(item.node)}
+            onDragEnd={onCardDragEnd}
+              onDragEnter={!item.isLinkedReference ? () => onCardDragEnter(item.node) : undefined}
+              onDropLink={!item.isLinkedReference ? () => onCardDrop(item.node) : undefined}
           />
         ))}
       </div>
@@ -708,6 +891,13 @@ function AssignmentCard({
   linkedViaAssignment,
   onClick,
   onAssign,
+  isDragSource,
+  isDragActive,
+  isDropTarget,
+  onDragStart,
+  onDragEnd,
+  onDragEnter,
+  onDropLink,
 }: {
   node: CourseNodeSummary;
   moduleLabel: string | null;
@@ -715,11 +905,19 @@ function AssignmentCard({
   linkedViaAssignment: string | null;
   onClick: () => void;
   onAssign?: (node: CourseNodeSummary) => void;
+  isDragSource: boolean;
+  isDragActive: boolean;
+  isDropTarget: boolean;
+  onDragStart: () => void;
+  onDragEnd: () => void;
+  onDragEnter?: () => void;
+  onDropLink?: () => void;
 }) {
   return (
     <div
       role="button"
       tabIndex={0}
+      draggable={isDragSource}
       onClick={onClick}
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
@@ -727,11 +925,31 @@ function AssignmentCard({
           onClick();
         }
       }}
+      onDragStart={(event) => {
+        if (!isDragSource) return;
+        event.dataTransfer.effectAllowed = "copy";
+        onDragStart();
+      }}
+      onDragEnd={onDragEnd}
+      onDragEnter={(event) => {
+          if (!onDragEnter) return;
+        event.preventDefault();
+        onDragEnter();
+      }}
+      onDragOver={(event) => {
+          if (!onDropLink) return;
+        event.preventDefault();
+      }}
+      onDrop={(event) => {
+          if (!onDropLink) return;
+        event.preventDefault();
+        onDropLink();
+      }}
       className={`group cursor-pointer rounded-xl border p-4 text-left backdrop-blur-sm transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70 ${
         isLinkedReference
           ? "border-white/16 bg-secondary/18 opacity-80 hover:border-white/28 hover:bg-secondary/24"
           : "border-secondary/55 bg-secondary/28 hover:-translate-y-px hover:border-secondary/75 hover:bg-secondary/38"
-      }`}
+      } ${isDragSource ? "cursor-grab active:cursor-grabbing" : ""} ${isDragActive ? "ring-2 ring-primary/50" : ""} ${isDropTarget ? "ring-2 ring-emerald-400/70 border-emerald-300/60 bg-emerald-500/10" : ""}`}
     >
       <div className="flex items-start gap-3">
         {/* Type icon */}
@@ -781,8 +999,10 @@ function AssignmentCard({
             )}
 
             {/* Type label */}
-            <span className="text-[10px] text-muted-foreground/60 capitalize">
-              {node.type}
+            <span
+              className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium ${typePillClass(node.type)}`}
+            >
+              {typeLabel(node.type)}
             </span>
 
             {isLinkedReference && (

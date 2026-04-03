@@ -28,6 +28,7 @@ import type {
   NodeLink,
   Finding,
   GraphState,
+  NodeGraphNeighbors,
   AuditRun,
   DashboardStats,
   Rubric,
@@ -75,6 +76,8 @@ export const api = {
 
   // Graph
   getGraph: () => request<GraphState>("/api/graph"),
+
+  getNodeGraph: (id: string) => request<NodeGraphNeighbors>(`/api/graph/node/${id}`),
 
   // Audit
   startAudit: (assignmentId: string) =>
@@ -126,7 +129,7 @@ export const api = {
     request<{ groups_merged: number; nodes_deleted: number }>("/api/ingest/dedup-files", { method: "POST" }),
 
   relinkContent: () =>
-    request<{ nodes_processed: number; links_extracted: number; edges_total: number }>(
+    request<{ nodes_processed: number; links_extracted: number; modules_auto_assigned: number; edges_total: number }>(
       "/api/ingest/relink-content",
       { method: "POST" },
     ),

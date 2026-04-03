@@ -472,6 +472,7 @@ async def relink_content() -> dict[str, int]:
     """Re-extract assignment/page HTML links into node_links and rebuild graph edges."""
     from backend.db import get_db
     from backend.services.ingest.canvas_live import _extract_and_store_links
+    from backend.services.ingest.module_inference import auto_assign_pdf_modules_from_mentions
 
     db = await get_db()
     cursor = await db.execute(
@@ -493,10 +494,13 @@ async def relink_content() -> dict[str, int]:
         links_extracted += await _extract_and_store_links(str(row["id"]), description)
         nodes_processed += 1
 
+    module_inference = await auto_assign_pdf_modules_from_mentions(db)
+
     graph_result = await rebuild_graph()
     return {
         "nodes_processed": nodes_processed,
         "links_extracted": links_extracted,
+        "modules_auto_assigned": module_inference.get("modules_auto_assigned", 0),
         "edges_total": graph_result.total_edges,
     }
 

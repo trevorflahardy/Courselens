@@ -5,8 +5,11 @@ import { useParams, useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import type {
   CourseNode,
+  CourseNodeSummary,
   Finding,
   FindingSeverity,
+  GraphEdge,
+  NodeType,
   Rubric,
   RubricCriterion,
 } from "@/lib/types";
@@ -99,6 +102,56 @@ function passLabel(pass: number): string {
   }
 }
 
+function isPdfDocument(node: Pick<CourseNode, "title" | "canvas_url" | "file_path">): boolean {
+  return [node.title, node.canvas_url, node.file_path].some((value) =>
+    Boolean(value && /\.pdf($|\?)/i.test(value)),
+  );
+}
+
+function analyzeLecturePdf(node: Pick<CourseNode, "title" | "module" | "canvas_url" | "file_path">): {
+  isPdf: boolean;
+  likelyLecture: boolean;
+  confidence: "high" | "medium" | "low";
+  score: number;
+  reasons: string[];
+} {
+  const text = [node.title, node.module, node.canvas_url, node.file_path]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  const reasons: string[] = [];
+
+  const isPdf = isPdfDocument(node);
+  if (!isPdf) {
+    return { isPdf: false, likelyLecture: false, confidence: "low", score: 0, reasons };
+  }
+
+  let score = 0;
+
+  if (/lecture\s*materials|\/lecture\s*materials\//i.test(text)) {
+    score += 3;
+    reasons.push("Located in Lecture Materials path");
+  }
+  if (/\bweek\s*\d+\b/i.test(text)) {
+    score += 1;
+    reasons.push("Contains week number");
+  }
+  if (/\blecture\b|\bslides?\b|\bdeck\b|\bpresentation\b|\blab\b/i.test(text)) {
+    score += 2;
+    reasons.push("Title includes lecture/lab/slides keywords");
+  }
+  if (/\bsyllabus\b|\brubric\b|\bassignment\b|\btemplate\b|\bminutes\b|\bgrading\b|\bpaper\b/i.test(text)) {
+    score -= 2;
+    reasons.push("Title includes non-lecture keywords");
+  }
+
+  const likelyLecture = score >= 2;
+  const confidence: "high" | "medium" | "low" =
+    score >= 4 ? "high" : score >= 2 ? "medium" : "low";
+
+  return { isPdf: true, likelyLecture, confidence, score, reasons };
+}
+
 /**
  * Basic HTML sanitizer that strips script tags and event handlers.
  * For course content sourced from Canvas via our own backend.
@@ -133,6 +186,16 @@ export default function AssignmentDetailPage() {
   const [linkSaving, setLinkSaving] = useState(false);
   const [linkError, setLinkError] = useState<string | null>(null);
   const [linkSuccess, setLinkSuccess] = useState<string | null>(null);
+  const [linkedResources, setLinkedResources] = useState<Array<{
+    node: CourseNodeSummary;
+    direction: "upstream" | "downstream";
+    edgeType: GraphEdge["edge_type"];
+    edgeLabel: string | null;
+    confidence: number | null;
+  }>>([]);
+  const [linkDataLoading, setLinkDataLoading] = useState(false);
+  const [typeSaving, setTypeSaving] = useState(false);
+  const [typeMessage, setTypeMessage] = useState<string | null>(null);
 
   // Fetch data
   useEffect(() => {
@@ -149,12 +212,16 @@ export default function AssignmentDetailPage() {
         setLinkWeek(nodeData.week !== null ? String(nodeData.week) : "");
         setLinkModule(nodeData.module ?? "");
 
-        Promise.all([api.listNodes({ type: "assignment" }), api.getNodeLinks(nodeData.id)])
-          .then(([assignments, links]) => {
+        setLinkDataLoading(true);
+        Promise.all([api.listNodes(), api.getNodeLinks(nodeData.id), api.getNodeGraph(nodeData.id)])
+          .then(([allNodes, links, nodeGraph]) => {
             if (cancelled) return;
 
+            const nodeById = new Map(allNodes.map((entry) => [entry.id, entry]));
+
             setAssignmentOptions(
-              assignments
+              allNodes
+                .filter((entry) => entry.type === "assignment")
                 .filter((assignment) => assignment.id !== nodeData.id)
                 .map((assignment) => ({
                   value: assignment.id,
@@ -175,11 +242,47 @@ export default function AssignmentDetailPage() {
               .filter((sourceId) => sourceId !== nodeData.id);
 
             setSelectedAssignmentLinks(existing);
+
+            const dedup = new Map<string, {
+              node: CourseNodeSummary;
+              direction: "upstream" | "downstream";
+              edgeType: GraphEdge["edge_type"];
+              edgeLabel: string | null;
+              confidence: number | null;
+            }>();
+
+            const allEdges = [
+              ...nodeGraph.upstream.map((edge) => ({ edge, direction: "upstream" as const })),
+              ...nodeGraph.downstream.map((edge) => ({ edge, direction: "downstream" as const })),
+            ];
+
+            allEdges.forEach(({ edge, direction }) => {
+              const relatedId = direction === "upstream" ? edge.source : edge.target;
+              const related = nodeById.get(relatedId);
+              if (!related || related.id === nodeData.id) return;
+              const key = `${related.id}::${edge.edge_type}::${edge.label ?? ""}::${direction}`;
+              if (dedup.has(key)) return;
+              dedup.set(key, {
+                node: related,
+                direction,
+                edgeType: edge.edge_type,
+                edgeLabel: edge.label,
+                confidence: edge.confidence,
+              });
+            });
+
+            setLinkedResources(Array.from(dedup.values()));
           })
           .catch(() => {
             if (cancelled) return;
             setAssignmentOptions([]);
             setSelectedAssignmentLinks([]);
+            setLinkedResources([]);
+          })
+          .finally(() => {
+            if (!cancelled) {
+              setLinkDataLoading(false);
+            }
           });
 
         // Rubrics are exposed through assignments, not as standalone nodes.
@@ -286,6 +389,47 @@ export default function AssignmentDetailPage() {
       setLinkSaving(false);
     }
   };
+
+  const handleAssignNodeType = async (nextType: NodeType) => {
+    if (!node) return;
+    if (nextType === node.type) return;
+    setTypeSaving(true);
+    setTypeMessage(null);
+    try {
+      const updated = await api.updateNode(node.id, { type: nextType });
+      setNode(updated);
+      setTypeMessage(
+        nextType === "lecture"
+          ? "Document marked as lecture type."
+          : `Node type updated to ${nextType}.`,
+      );
+    } catch (err) {
+      setTypeMessage(err instanceof Error ? err.message : "Unable to update node type.");
+    } finally {
+      setTypeSaving(false);
+    }
+  };
+
+  const linkedByType = useMemo(() => {
+    const grouped = new Map<NodeType, typeof linkedResources>();
+    linkedResources.forEach((item) => {
+      const bucket = grouped.get(item.node.type) ?? [];
+      bucket.push(item);
+      grouped.set(item.node.type, bucket);
+    });
+
+    return Array.from(grouped.entries())
+      .sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))
+      .map(([type, items]) => ({
+        type,
+        items: items.sort((a, b) => a.node.title.localeCompare(b.node.title)),
+      }));
+  }, [linkedResources]);
+
+  const lectureSignal = useMemo(() => {
+    if (!node) return null;
+    return analyzeLecturePdf(node);
+  }, [node]);
 
   // ---------------------------------------------------------------------------
   // Loading / Error states
@@ -484,6 +628,67 @@ export default function AssignmentDetailPage() {
               )}
             </Button>
           </div>
+
+          {node.type === "file" || node.type === "lecture" ? (
+            <div className="border-t border-white/6 pt-4 space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold text-foreground/90">Document Classification</h3>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Auto-checks whether this PDF looks like lecture content and lets you assign type.
+                  </p>
+                </div>
+                <Badge variant="outline" className="capitalize text-[11px]">
+                  Current: {node.type}
+                </Badge>
+              </div>
+
+              {lectureSignal && lectureSignal.isPdf ? (
+                <div className="rounded-lg border border-white/8 bg-white/3 px-3 py-2.5 space-y-1.5">
+                  <p className="text-xs text-foreground/85">
+                    Lecture likelihood: <span className="font-semibold capitalize">{lectureSignal.confidence}</span>
+                    {` `}({lectureSignal.score} pts)
+                  </p>
+                  <p className="text-[11px] text-muted-foreground/70">
+                    {lectureSignal.likelyLecture
+                      ? "This PDF matches common lecture naming/path patterns."
+                      : "This PDF does not strongly match lecture patterns yet."}
+                  </p>
+                  {lectureSignal.reasons.length > 0 && (
+                    <p className="text-[11px] text-muted-foreground/60">
+                      {lectureSignal.reasons.join(" • ")}
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground/70">
+                  This item does not appear to be a PDF, so auto lecture detection is unavailable.
+                </p>
+              )}
+
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant={node.type === "lecture" ? "secondary" : "default"}
+                  disabled={typeSaving || node.type === "lecture"}
+                  onClick={() => handleAssignNodeType("lecture")}
+                >
+                  {typeSaving ? <Loader2 className="size-4 mr-1.5 animate-spin" /> : null}
+                  Mark as Lecture
+                </Button>
+                <Button
+                  variant={node.type === "file" ? "secondary" : "outline"}
+                  disabled={typeSaving || node.type === "file"}
+                  onClick={() => handleAssignNodeType("file")}
+                >
+                  Set as File
+                </Button>
+              </div>
+
+              {typeMessage && (
+                <p className="text-xs text-muted-foreground">{typeMessage}</p>
+              )}
+            </div>
+          ) : null}
         </div>
       )}
 
@@ -498,9 +703,60 @@ export default function AssignmentDetailPage() {
               </span>
             )}
           </TabsTrigger>
+          <TabsTrigger value="links">
+            Linked Resources
+            {linkedResources.length > 0 && (
+              <span className="ml-1.5 tabular-nums text-xs text-muted-foreground">
+                ({linkedResources.length})
+              </span>
+            )}
+          </TabsTrigger>
           <TabsTrigger value="content">Content</TabsTrigger>
           {node.rubric_id && <TabsTrigger value="rubric">Rubric</TabsTrigger>}
         </TabsList>
+
+        <TabsContent value="links" className="mt-4 space-y-4">
+          {linkDataLoading ? (
+            <div className="rounded-xl border border-white/8 bg-white/2 p-4">
+              <p className="text-sm text-muted-foreground">Loading linked resources...</p>
+            </div>
+          ) : linkedByType.length === 0 ? (
+            <div className="rounded-xl border border-white/8 bg-white/2 p-6 text-center">
+              <p className="text-sm text-muted-foreground">No linked resources found for this item.</p>
+            </div>
+          ) : (
+            linkedByType.map((group) => (
+              <div key={group.type} className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline" className="capitalize text-[11px]">
+                    {group.type}
+                  </Badge>
+                  <span className="text-xs text-muted-foreground">{group.items.length} linked</span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  {group.items.map((item) => (
+                    <button
+                      key={`${item.node.id}-${item.edgeType}-${item.direction}-${item.edgeLabel ?? ""}`}
+                      onClick={() => router.push(`/assignments/${item.node.id}`)}
+                      className="w-full text-left rounded-lg border border-white/8 bg-white/2 hover:bg-white/5 transition-colors p-3"
+                    >
+                      <div className="flex items-center gap-2">
+                        {typeIcon(item.node.type)}
+                        <p className="text-sm text-foreground/90 truncate">{item.node.title}</p>
+                      </div>
+                      <p className="mt-1 text-[11px] text-muted-foreground/70 capitalize">
+                        {item.direction === "upstream" ? "Depends on" : "Referenced by"}
+                        {` • `}
+                        {item.edgeType}
+                        {item.edgeLabel ? ` • ${item.edgeLabel}` : ""}
+                      </p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))
+          )}
+        </TabsContent>
 
         {/* Findings tab */}
         <TabsContent value="findings" className="mt-4 space-y-6">

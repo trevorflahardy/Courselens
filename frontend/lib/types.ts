@@ -132,6 +132,11 @@ export interface GraphState {
   flags: CourseNodeSummary[];
 }
 
+export interface NodeGraphNeighbors {
+  upstream: GraphEdge[];
+  downstream: GraphEdge[];
+}
+
 // --- Audit Models ---
 
 export interface AuditRun {

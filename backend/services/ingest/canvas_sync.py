@@ -27,6 +27,7 @@ class SyncResult:
     pages: int = 0
     files: int = 0
     links_extracted: int = 0
+    modules_auto_assigned: int = 0
     rubrics_fetched: int = 0
     rubrics_linked: int = 0
     errors: list[str] = field(default_factory=list)
@@ -66,6 +67,7 @@ async def run_full_sync(
     result = SyncResult()
     now = datetime.now().isoformat()
     from backend.services.ingest.canvas_live import _extract_and_store_links
+    from backend.services.ingest.module_inference import auto_assign_pdf_modules_from_mentions
 
     async def emit(msg: str) -> None:
         logger.info("[canvas-sync] %s", msg)
@@ -216,6 +218,13 @@ async def run_full_sync(
 
     await emit(f"Extracted {result.links_extracted} links from assignment/page content")
 
+    module_inference = await auto_assign_pdf_modules_from_mentions(db)
+    result.modules_auto_assigned = module_inference.get("modules_auto_assigned", 0)
+    await emit(
+        "Auto-assigned PDF modules from mentions: "
+        f"{result.modules_auto_assigned}/{module_inference.get('pdf_candidates', 0)}"
+    )
+
     # ── Phase 5: Rubrics ───────────────────────────────────────────────────────
     await emit(f"Fetching {len(rubric_ids_needed)} rubrics...")
 
@@ -289,6 +298,7 @@ async def run_full_sync(
     await emit(
         f"Sync complete — {result.assignments} assignments, {result.pages} pages, "
         f"{result.files} files, {result.links_extracted} links extracted, "
+        f"{result.modules_auto_assigned} files auto-assigned to modules, "
         f"{result.rubrics_fetched} rubrics, "
         f"{result.rubrics_linked} rubric links"
     )

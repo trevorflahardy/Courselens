@@ -14,6 +14,7 @@ router = APIRouter(prefix="/api/nodes", tags=["nodes"])
 class NodeUpdate(BaseModel):
     """API input model — no strict mode so JSON strings coerce to enums."""
 
+    type: NodeType | None = None
     title: str | None = None
     description: str | None = None
     week: int | None = None
