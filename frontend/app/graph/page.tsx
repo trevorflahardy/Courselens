@@ -7,10 +7,11 @@ import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
 import type { CourseNodeSummary, GraphEdge } from "@/lib/types";
 
-type FilterMode = "all" | "gaps" | "orphans" | "inferred";
+type FilterMode = "all" | "connected" | "gaps" | "orphans" | "inferred";
 
 const FILTER_OPTIONS: { value: FilterMode; label: string; description: string }[] = [
   { value: "all", label: "All Nodes", description: "Show everything" },
+  { value: "connected", label: "Connected", description: "Hide disconnected nodes" },
   { value: "gaps", label: "Gaps Only", description: "Must-fix issues" },
   { value: "orphans", label: "Orphans", description: "Disconnected nodes" },
   { value: "inferred", label: "Inferred Edges", description: "AI-derived links" },

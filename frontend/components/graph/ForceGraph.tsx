@@ -27,7 +27,7 @@ interface GraphLink extends d3.SimulationLinkDatum<GraphNode> {
 interface ForceGraphProps {
   nodes: CourseNodeSummary[];
   edges: GraphEdge[];
-  filter: "all" | "gaps" | "orphans" | "inferred";
+  filter: "all" | "connected" | "gaps" | "orphans" | "inferred";
   onNodeClick?: (nodeId: string) => void;
   selectedNodeId?: string | null;
 }
@@ -97,7 +97,14 @@ export function ForceGraph({ nodes, edges, filter, onNodeClick, selectedNodeId }
       confidence: e.confidence,
     })) as GraphLink[];
 
-    if (filter === "gaps") {
+    if (filter === "connected") {
+      const connectedNodeIds = new Set<string>();
+      filteredEdges.forEach((e) => {
+        connectedNodeIds.add(typeof e.source === "string" ? e.source : (e.source as GraphNode).id);
+        connectedNodeIds.add(typeof e.target === "string" ? e.target : (e.target as GraphNode).id);
+      });
+      filteredNodes = filteredNodes.filter((n) => connectedNodeIds.has(n.id));
+    } else if (filter === "gaps") {
       const gapNodeIds = new Set(filteredNodes.filter((n) => n.status === "gap").map((n) => n.id));
       // Include gap edges too
       filteredEdges.forEach((e) => {

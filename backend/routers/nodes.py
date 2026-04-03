@@ -26,6 +26,13 @@ class NodeUpdate(BaseModel):
     canvas_url: str | None = None
 
 
+class NodeLinkCreate(BaseModel):
+    """Create a directed link between two existing nodes."""
+
+    target_id: str
+    link_type: str
+
+
 @router.get("")
 async def list_nodes(
     type: NodeType | None = None,
@@ -64,3 +71,21 @@ async def update_node(node_id: str, body: NodeUpdate) -> CourseNode:
 
     node = await node_service.upsert_node(node_id, data)
     return node
+
+
+@router.post("/{node_id}/links")
+async def create_node_link(node_id: str, body: NodeLinkCreate) -> dict[str, str]:
+    source = await node_service.get_node(node_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail=f"Node '{node_id}' not found")
+
+    target = await node_service.get_node(body.target_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"Node '{body.target_id}' not found")
+
+    link = await node_service.link_nodes(node_id, body.target_id, body.link_type)
+    return {
+        "source_id": link.source_id,
+        "target_id": link.target_id,
+        "link_type": link.link_type,
+    }

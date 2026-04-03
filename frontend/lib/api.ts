@@ -44,6 +44,18 @@ export const api = {
 
   getNode: (id: string) => request<CourseNode>(`/api/nodes/${id}`),
 
+  updateNode: (id: string, body: Partial<CourseNode>) =>
+    request<CourseNode>(`/api/nodes/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
+  createNodeLink: (sourceId: string, targetId: string, linkType: "file" | "assignment" | "page") =>
+    request<{ source_id: string; target_id: string; link_type: string }>(`/api/nodes/${sourceId}/links`, {
+      method: "POST",
+      body: JSON.stringify({ target_id: targetId, link_type: linkType }),
+    }),
+
   // Findings
   listFindings: (params?: { assignment_id?: string; severity?: string }) => {
     const qs = new URLSearchParams();
@@ -82,7 +94,12 @@ export const api = {
   uploadZip: (file: File) => {
     const form = new FormData();
     form.append("file", file);
-    return fetch(`${API_BASE}/api/ingest/zip`, { method: "POST", body: form }).then(r => r.json());
+    return fetch(`${API_BASE}/api/ingest/zip`, { method: "POST", body: form }).then(async (r) => {
+      if (!r.ok) {
+        throw new Error(`API ${r.status}: ${await r.text()}`);
+      }
+      return r.json();
+    });
   },
 
   rebuildGraph: () =>

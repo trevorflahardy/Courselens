@@ -22,6 +22,7 @@ async def client():
 # Health
 # ---------------------------------------------------------------------------
 
+
 async def test_health(client: AsyncClient) -> None:
     r = await client.get("/api/health")
     assert r.status_code == 200
@@ -31,6 +32,7 @@ async def test_health(client: AsyncClient) -> None:
 # ---------------------------------------------------------------------------
 # Nodes
 # ---------------------------------------------------------------------------
+
 
 async def test_list_nodes(client: AsyncClient) -> None:
     r = await client.get("/api/nodes")
@@ -100,9 +102,30 @@ async def test_stale_nodes(client: AsyncClient) -> None:
     assert isinstance(r.json(), list)
 
 
+async def test_create_node_link(client: AsyncClient) -> None:
+    r = await client.post(
+        "/api/nodes/assign-01/links",
+        json={"target_id": "assign-02", "link_type": "assignment"},
+    )
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["source_id"] == "assign-01"
+    assert payload["target_id"] == "assign-02"
+    assert payload["link_type"] == "assignment"
+
+
+async def test_create_node_link_404(client: AsyncClient) -> None:
+    r = await client.post(
+        "/api/nodes/missing/links",
+        json={"target_id": "assign-02", "link_type": "assignment"},
+    )
+    assert r.status_code == 404
+
+
 # ---------------------------------------------------------------------------
 # Findings
 # ---------------------------------------------------------------------------
+
 
 async def test_list_findings(client: AsyncClient) -> None:
     r = await client.get("/api/findings")
@@ -131,6 +154,7 @@ async def test_list_findings_by_node(client: AsyncClient) -> None:
 # Graph
 # ---------------------------------------------------------------------------
 
+
 async def test_get_graph(client: AsyncClient) -> None:
     r = await client.get("/api/graph")
     assert r.status_code == 200
@@ -155,6 +179,7 @@ async def test_get_node_graph(client: AsyncClient) -> None:
 # Audit
 # ---------------------------------------------------------------------------
 
+
 async def test_list_audit_runs(client: AsyncClient) -> None:
     r = await client.get("/api/audit/runs")
     assert r.status_code == 200
@@ -178,8 +203,12 @@ async def test_get_audit_run_404(client: AsyncClient) -> None:
 
 async def test_start_audit(client: AsyncClient) -> None:
     mock_progress = AuditProgress(
-        run_id="test-run", assignment_id="assign-01", status="done",
-        pass1_findings=1, pass2_findings=0, pass3_findings=0,
+        run_id="test-run",
+        assignment_id="assign-01",
+        status="done",
+        pass1_findings=1,
+        pass2_findings=0,
+        pass3_findings=0,
     )
 
     async def _mock_run(assignment_id: str, run_id: str | None = None) -> AuditProgress:
@@ -213,6 +242,7 @@ async def test_stream_audit_404(client: AsyncClient) -> None:
 # ---------------------------------------------------------------------------
 # Ingest (stubs)
 # ---------------------------------------------------------------------------
+
 
 async def test_ingest_course_501(client: AsyncClient) -> None:
     r = await client.post("/api/ingest/course")

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import logging
+import tempfile
 from dataclasses import asdict
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from backend.services.ingest.canvas_zip import ingest_zip as do_ingest_zip
 from backend.services.ingest.graph_builder import rebuild_graph
@@ -20,15 +21,33 @@ _ingest_status: dict[str, object] = {"status": "idle", "message": "No ingestion 
 
 
 @router.post("/zip")
-async def ingest_zip(zip_filename: str = "course_files_export.zip") -> dict[str, object]:
-    """Ingest from a Canvas course files ZIP export in data/."""
+async def ingest_zip(
+    zip_filename: str = "course_files_export.zip",
+    file: UploadFile | None = File(default=None),
+) -> dict[str, object]:
+    """Ingest from either an uploaded ZIP file or a ZIP already stored in data/."""
     global _ingest_status
-    zip_path = Path("data") / zip_filename
+    temp_zip: Path | None = None
 
-    if not zip_path.exists():
-        raise HTTPException(status_code=404, detail=f"ZIP file not found: {zip_path}")
+    if file is not None:
+        suffix = Path(file.filename or "upload.zip").suffix or ".zip"
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+        try:
+            contents = await file.read()
+            tmp.write(contents)
+            tmp.flush()
+        finally:
+            tmp.close()
+        temp_zip = Path(tmp.name)
+        zip_path = temp_zip
+        display_name = file.filename or temp_zip.name
+    else:
+        zip_path = Path("data") / zip_filename
+        display_name = zip_filename
+        if not zip_path.exists():
+            raise HTTPException(status_code=404, detail=f"ZIP file not found: {zip_path}")
 
-    _ingest_status = {"status": "running", "message": f"Ingesting {zip_filename}..."}
+    _ingest_status = {"status": "running", "message": f"Ingesting {display_name}..."}
 
     try:
         result = await do_ingest_zip(str(zip_path))
@@ -41,6 +60,12 @@ async def ingest_zip(zip_filename: str = "course_files_export.zip") -> dict[str,
         logger.exception("ZIP ingestion failed")
         _ingest_status = {"status": "error", "message": str(e)}
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if temp_zip is not None:
+            try:
+                temp_zip.unlink(missing_ok=True)
+            except Exception:
+                logger.warning("Failed to remove temporary uploaded ZIP: %s", temp_zip)
 
 
 @router.post("/rebuild-graph")

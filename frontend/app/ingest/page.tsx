@@ -13,9 +13,18 @@ import {
   Trash2,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import type { CourseNodeSummary } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Dialog,
   DialogContent,
@@ -32,11 +41,13 @@ import {
 /* -------------------------------------------------------------------------- */
 
 interface UploadResult {
-  nodes_extracted?: number;
+  nodes_created?: number;
   files_extracted?: number;
   status?: string;
   error?: string;
 }
+
+type AssignmentMode = "assignment" | "lecture" | "metadata";
 
 interface GraphResult {
   edges: number;
@@ -148,6 +159,17 @@ export default function IngestPage() {
     file: 0,
   });
   const [totalEdges, setTotalEdges] = useState(0);
+  const [unassignedFiles, setUnassignedFiles] = useState<CourseNodeSummary[]>([]);
+  const [assignmentNodes, setAssignmentNodes] = useState<CourseNodeSummary[]>([]);
+  const [lectureNodes, setLectureNodes] = useState<CourseNodeSummary[]>([]);
+  const [selectedFileId, setSelectedFileId] = useState("");
+  const [assignmentMode, setAssignmentMode] = useState<AssignmentMode>("assignment");
+  const [selectedAssignmentId, setSelectedAssignmentId] = useState("");
+  const [selectedLectureId, setSelectedLectureId] = useState("");
+  const [targetWeek, setTargetWeek] = useState("");
+  const [targetModule, setTargetModule] = useState("");
+  const [assigningFile, setAssigningFile] = useState(false);
+  const [assignError, setAssignError] = useState<string | null>(null);
 
   /* ---- ZIP upload state ---- */
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -185,13 +207,9 @@ export default function IngestPage() {
     [],
   );
 
-  /* ---- initial fetch ---- */
-  useEffect(() => {
-    api.getIngestStatus().then((s) => {
-      if (s.last_run) setLastRun(s.last_run);
-    }).catch(() => {});
-
-    api.listNodes().then((nodes) => {
+  const refreshNodeCounts = useCallback(async () => {
+    try {
+      const nodes = await api.listNodes();
       const counts: NodeTypeCounts = {
         assignment: 0,
         page: 0,
@@ -204,12 +222,44 @@ export default function IngestPage() {
         if (n.type in counts) counts[n.type as keyof NodeTypeCounts]++;
       }
       setNodeCounts(counts);
+    } catch {
+      // Best-effort UI refresh only.
+    }
+  }, []);
+
+  const refreshAssignableData = useCallback(async () => {
+    try {
+      const [files, assignments, lectures] = await Promise.all([
+        api.listNodes({ type: "file" }),
+        api.listNodes({ type: "assignment" }),
+        api.listNodes({ type: "lecture" }),
+      ]);
+
+      const unassigned = files.filter((n) => n.week === null && !n.module);
+      setUnassignedFiles(unassigned);
+      setAssignmentNodes(assignments);
+      setLectureNodes(lectures);
+
+      if (!unassigned.find((n) => n.id === selectedFileId)) {
+        setSelectedFileId(unassigned[0]?.id ?? "");
+      }
+    } catch {
+      // Assignment tools are supplementary; ignore load errors.
+    }
+  }, [selectedFileId]);
+
+  /* ---- initial fetch ---- */
+  useEffect(() => {
+    api.getIngestStatus().then((s) => {
+      if (s.last_run) setLastRun(s.last_run);
     }).catch(() => {});
+    refreshNodeCounts();
+    refreshAssignableData();
 
     api.getGraph().then((g) => {
       setTotalEdges(g.edges.length);
     }).catch(() => {});
-  }, []);
+  }, [refreshNodeCounts, refreshAssignableData]);
 
   /* ---- ZIP Upload handlers ---- */
   const handleFile = useCallback((file: File) => {
@@ -246,17 +296,8 @@ export default function IngestPage() {
       setUploadResult(result);
       setLastRun(new Date().toISOString());
       pushLog("upload", selectedFile.name, result.error ? "error" : "ok");
-
-      // Refresh node counts
-      api.listNodes().then((nodes) => {
-        const counts: NodeTypeCounts = {
-          assignment: 0, page: 0, rubric: 0, lecture: 0, announcement: 0, file: 0,
-        };
-        for (const n of nodes) {
-          if (n.type in counts) counts[n.type as keyof NodeTypeCounts]++;
-        }
-        setNodeCounts(counts);
-      }).catch(() => {});
+      await refreshNodeCounts();
+      await refreshAssignableData();
     } catch (err) {
       clearInterval(progressInterval);
       setUploadProgress(0);
@@ -265,7 +306,7 @@ export default function IngestPage() {
     } finally {
       setUploading(false);
     }
-  }, [selectedFile, pushLog]);
+  }, [selectedFile, pushLog, refreshNodeCounts, refreshAssignableData]);
 
   /* ---- Canvas Sync handlers ---- */
   const startSync = useCallback(async () => {
@@ -286,23 +327,14 @@ export default function IngestPage() {
       setSyncStage("done");
       setLastRun(new Date().toISOString());
       pushLog("sync", "Canvas live sync", result.status === "error" ? "error" : "ok");
-
-      // Refresh counts
-      api.listNodes().then((nodes) => {
-        const counts: NodeTypeCounts = {
-          assignment: 0, page: 0, rubric: 0, lecture: 0, announcement: 0, file: 0,
-        };
-        for (const n of nodes) {
-          if (n.type in counts) counts[n.type as keyof NodeTypeCounts]++;
-        }
-        setNodeCounts(counts);
-      }).catch(() => {});
+      await refreshNodeCounts();
+      await refreshAssignableData();
     } catch {
       if (syncPollRef.current) clearInterval(syncPollRef.current);
       setSyncStage("error");
       pushLog("sync", "Canvas live sync", "error");
     }
-  }, [pushLog]);
+  }, [pushLog, refreshNodeCounts, refreshAssignableData]);
 
   useEffect(() => {
     return () => {
@@ -325,6 +357,83 @@ export default function IngestPage() {
       setRebuildingGraph(false);
     }
   }, [pushLog]);
+
+  const handleAssignFile = useCallback(async () => {
+    if (!selectedFileId) return;
+
+    setAssigningFile(true);
+    setAssignError(null);
+
+    try {
+      if (assignmentMode === "assignment") {
+        if (!selectedAssignmentId) {
+          throw new Error("Select an assignment first.");
+        }
+        const assignmentNode = assignmentNodes.find((n) => n.id === selectedAssignmentId);
+        if (!assignmentNode) {
+          throw new Error("Selected assignment was not found.");
+        }
+
+        await api.createNodeLink(selectedAssignmentId, selectedFileId, "file");
+        await api.updateNode(selectedFileId, {
+          week: assignmentNode.week,
+          module: assignmentNode.module,
+        });
+        pushLog("extract", `Linked file to assignment: ${assignmentNode.title}`, "ok");
+      }
+
+      if (assignmentMode === "lecture") {
+        if (!selectedLectureId) {
+          throw new Error("Select a lecture first.");
+        }
+        const lectureNode = lectureNodes.find((n) => n.id === selectedLectureId);
+        if (!lectureNode) {
+          throw new Error("Selected lecture was not found.");
+        }
+
+        await api.createNodeLink(selectedLectureId, selectedFileId, "file");
+        await api.updateNode(selectedFileId, {
+          week: lectureNode.week,
+          module: lectureNode.module,
+        });
+        pushLog("extract", `Linked file to lecture: ${lectureNode.title}`, "ok");
+      }
+
+      if (assignmentMode === "metadata") {
+        const parsedWeek = targetWeek.trim() === "" ? null : Number(targetWeek);
+        if (parsedWeek !== null && !Number.isInteger(parsedWeek)) {
+          throw new Error("Week must be a whole number.");
+        }
+
+        await api.updateNode(selectedFileId, {
+          week: parsedWeek,
+          module: targetModule.trim() || null,
+        });
+        pushLog("extract", "Updated file week/module", "ok");
+      }
+
+      await refreshAssignableData();
+      await refreshNodeCounts();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to assign file";
+      setAssignError(message);
+      pushLog("extract", `File assignment failed: ${message}`, "error");
+    } finally {
+      setAssigningFile(false);
+    }
+  }, [
+    selectedFileId,
+    assignmentMode,
+    selectedAssignmentId,
+    selectedLectureId,
+    targetWeek,
+    targetModule,
+    assignmentNodes,
+    lectureNodes,
+    pushLog,
+    refreshAssignableData,
+    refreshNodeCounts,
+  ]);
 
   /* ---- Computed ---- */
   const totalNodes = Object.values(nodeCounts).reduce((a, b) => a + b, 0);
@@ -430,7 +539,7 @@ export default function IngestPage() {
                 <div className="flex items-center gap-2 text-[12px] text-emerald-400">
                   <Check className="size-3.5" />
                   <span>
-                    {uploadResult.nodes_extracted ?? 0} nodes, {uploadResult.files_extracted ?? 0}{" "}
+                    {uploadResult.nodes_created ?? 0} nodes, {uploadResult.files_extracted ?? 0}{" "}
                     files extracted
                   </span>
                 </div>
@@ -579,6 +688,146 @@ export default function IngestPage() {
           </div>
         </GlassCard>
       </div>
+
+      <GlassCard>
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+          <div>
+            <h2 className="text-[13px] font-semibold">Unassigned File Triage</h2>
+            <p className="text-[12px] text-muted-foreground mt-1">
+              Link unfiled files to an assignment or lecture, or set week/module manually.
+            </p>
+          </div>
+          <Badge variant="outline" className="text-[11px]">
+            {unassignedFiles.length} unassigned
+          </Badge>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <p className="text-[11px] uppercase tracking-wider text-muted-foreground">File</p>
+              <Select value={selectedFileId} onValueChange={(value) => setSelectedFileId(value ?? "")}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select an unassigned file" />
+                </SelectTrigger>
+                <SelectContent>
+                  {unassignedFiles.map((file) => (
+                    <SelectItem key={file.id} value={file.id}>
+                      {file.title}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-1.5">
+              <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Assign by</p>
+              <Select value={assignmentMode} onValueChange={(v) => setAssignmentMode((v ?? "assignment") as AssignmentMode)}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="assignment">Related assignment</SelectItem>
+                  <SelectItem value="lecture">Related lecture</SelectItem>
+                  <SelectItem value="metadata">Week/module only</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {assignmentMode === "assignment" && (
+              <div className="space-y-1.5">
+                <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Assignment</p>
+                <Select value={selectedAssignmentId} onValueChange={(value) => setSelectedAssignmentId(value ?? "")}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select assignment" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {assignmentNodes.map((assignment) => (
+                      <SelectItem key={assignment.id} value={assignment.id}>
+                        {assignment.title}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            {assignmentMode === "lecture" && (
+              <div className="space-y-1.5">
+                <p className="text-[11px] uppercase tracking-wider text-muted-foreground">Lecture</p>
+                <Select value={selectedLectureId} onValueChange={(value) => setSelectedLectureId(value ?? "")}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Select lecture" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {lectureNodes.map((lecture) => (
+                      <SelectItem key={lecture.id} value={lecture.id}>
+                        {lecture.title}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            {assignmentMode === "metadata" && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <Input
+                  value={targetWeek}
+                  onChange={(e) => setTargetWeek(e.target.value)}
+                  placeholder="Week (e.g. 6)"
+                />
+                <Input
+                  value={targetModule}
+                  onChange={(e) => setTargetModule(e.target.value)}
+                  placeholder="Module (optional)"
+                />
+              </div>
+            )}
+
+            {assignError && (
+              <p className="text-[12px] text-destructive">{assignError}</p>
+            )}
+
+            <Button
+              onClick={handleAssignFile}
+              disabled={!selectedFileId || assigningFile}
+              className="w-full"
+            >
+              {assigningFile ? (
+                <>
+                  <Loader2 className="size-3.5 mr-1.5 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                "Apply Assignment"
+              )}
+            </Button>
+          </div>
+
+          <div>
+            <p className="text-[11px] uppercase tracking-wider text-muted-foreground mb-2">
+              Current unassigned files
+            </p>
+            {unassignedFiles.length === 0 ? (
+              <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-3 text-[12px] text-emerald-300">
+                No unassigned files remain.
+              </div>
+            ) : (
+              <div className="max-h-56 overflow-y-auto space-y-1 pr-1">
+                {unassignedFiles.slice(0, 30).map((file) => (
+                  <div
+                    key={file.id}
+                    className="rounded-md bg-white/[0.02] px-2.5 py-1.5 text-[12px] text-muted-foreground"
+                  >
+                    {file.title}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </GlassCard>
 
       {/* Bottom section: Log + Data Summary */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
