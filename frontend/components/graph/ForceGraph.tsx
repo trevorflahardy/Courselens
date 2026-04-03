@@ -223,20 +223,43 @@ export function ForceGraph({ nodes, edges, filter, onNodeClick, selectedNodeId }
       .domain([minWeek, maxWeek])
       .range([-laneSpan / 2, laneSpan / 2]);
 
-    // Deterministic initialization by lane and stable hashed offsets.
-    const nodesByWeek = d3.group(graphNodes, (n) => n.week ?? 0);
-    for (const [, laneNodes] of nodesByWeek) {
-      const sorted = [...laneNodes].sort((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id));
-      const count = Math.max(1, sorted.length);
-      const laneWidth = Math.min(width * 0.8, 220 + count * 20);
-      const step = count === 1 ? 0 : laneWidth / (count - 1);
+    const moduleKeyForNode = (node: GraphNode): string => {
+      const week = node.week ?? 0;
+      const module = node.module?.trim() || "No module";
+      return `${week}::${module}`;
+    };
 
-      sorted.forEach((node, idx) => {
-        const xBase = count === 1 ? 0 : -laneWidth / 2 + step * idx;
-        const xJitter = (stableNoise(`${node.id}-x`) - 0.5) * 12;
-        const yJitter = (stableNoise(`${node.id}-y`) - 0.5) * 10;
-        node.x = xBase + xJitter;
-        node.y = weekScale(node.week ?? 0) + yJitter;
+    const moduleCenterX = new Map<string, number>();
+
+    // Deterministic initialization by lane and module cluster.
+    const nodesByWeek = d3.group(graphNodes, (n) => n.week ?? 0);
+    for (const [week, laneNodes] of nodesByWeek) {
+      const nodesByModule = d3.group(laneNodes, (n) => n.module?.trim() || "No module");
+      const moduleNames = [...nodesByModule.keys()].sort((a, b) => a.localeCompare(b));
+      const moduleSpacing = 170;
+      const totalModuleSpan = Math.max(0, (moduleNames.length - 1) * moduleSpacing);
+
+      moduleNames.forEach((moduleName, moduleIndex) => {
+        const moduleCenter = moduleNames.length === 1
+          ? 0
+          : -totalModuleSpan / 2 + moduleIndex * moduleSpacing;
+        moduleCenterX.set(`${week}::${moduleName}`, moduleCenter);
+
+        const moduleNodes = nodesByModule.get(moduleName) ?? [];
+        const sorted = [...moduleNodes].sort(
+          (a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id)
+        );
+        const count = Math.max(1, sorted.length);
+        const intraWidth = Math.min(120, 22 * (count - 1));
+        const step = count === 1 ? 0 : intraWidth / (count - 1);
+
+        sorted.forEach((node, idx) => {
+          const xBase = count === 1 ? moduleCenter : moduleCenter - intraWidth / 2 + step * idx;
+          const xJitter = (stableNoise(`${node.id}-x`) - 0.5) * 8;
+          const yJitter = (stableNoise(`${node.id}-y`) - 0.5) * 8;
+          node.x = xBase + xJitter;
+          node.y = weekScale(node.week ?? 0) + yJitter;
+        });
       });
     }
 
@@ -248,11 +271,11 @@ export function ForceGraph({ nodes, edges, filter, onNodeClick, selectedNodeId }
         d3
           .forceLink<GraphNode, GraphLink>(graphEdges)
           .id((d) => d.id)
-          .distance(90)
-          .strength(0.26)
+            .distance((d) => (d.label?.startsWith("Sequential in") ? 48 : 92))
+            .strength((d) => (d.label?.startsWith("Sequential in") ? 0.55 : 0.24))
       )
       .force("charge", d3.forceManyBody().strength(-140).distanceMax(260))
-      .force("x", d3.forceX<GraphNode>(0).strength(0.03))
+          .force("x", d3.forceX<GraphNode>((d) => moduleCenterX.get(moduleKeyForNode(d)) ?? 0).strength(0.2))
       .force("y", d3.forceY<GraphNode>((d) => weekScale(d.week ?? 0)).strength(0.28))
       .force("collision", d3.forceCollide<GraphNode>(24))
       .alpha(0.7)
@@ -411,7 +434,7 @@ export function ForceGraph({ nodes, edges, filter, onNodeClick, selectedNodeId }
     // Week labels on the left
     const labelGroup = g.append("g").attr("class", "week-labels");
     weeks.forEach((w) => {
-      if (w === 0) return;
+      const isNoWeek = w === 0;
       labelGroup
         .append("text")
         .attr("x", -width * 0.4)
@@ -420,7 +443,7 @@ export function ForceGraph({ nodes, edges, filter, onNodeClick, selectedNodeId }
         .attr("fill", "oklch(0.45 0.03 270)")
         .attr("font-family", "var(--font-geist-sans), sans-serif")
         .attr("font-weight", "600")
-        .text(`Week ${w}`);
+        .text(isNoWeek ? "No Week / Uncategorized" : `Week ${w}`);
 
       labelGroup
         .append("line")
@@ -428,8 +451,8 @@ export function ForceGraph({ nodes, edges, filter, onNodeClick, selectedNodeId }
         .attr("x2", width * 0.4)
         .attr("y1", weekScale(w))
         .attr("y2", weekScale(w))
-        .attr("stroke", "oklch(0.25 0.02 270 / 0.3)")
-        .attr("stroke-dasharray", "2,4");
+        .attr("stroke", isNoWeek ? "oklch(0.35 0.02 270 / 0.35)" : "oklch(0.25 0.02 270 / 0.3)")
+        .attr("stroke-dasharray", isNoWeek ? "6,4" : "2,4");
     });
 
     return () => {

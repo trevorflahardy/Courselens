@@ -82,6 +82,7 @@ export interface CourseNodeSummary {
   title: string;
   week: number | null;
   module: string | null;
+  rubric_id: string | null;
   status: NodeStatus;
   finding_count: number;
 }

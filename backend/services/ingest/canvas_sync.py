@@ -26,6 +26,7 @@ class SyncResult:
     assignments: int = 0
     pages: int = 0
     files: int = 0
+    links_extracted: int = 0
     rubrics_fetched: int = 0
     rubrics_linked: int = 0
     errors: list[str] = field(default_factory=list)
@@ -64,6 +65,7 @@ async def run_full_sync(
 
     result = SyncResult()
     now = datetime.now().isoformat()
+    from backend.services.ingest.canvas_live import _extract_and_store_links
 
     async def emit(msg: str) -> None:
         logger.info("[canvas-sync] %s", msg)
@@ -193,6 +195,27 @@ async def run_full_sync(
 
     await emit(f"Upserted {result.files} files")
 
+    # ── Phase 4.5: Smart link extraction from assignment/page HTML ───────────
+    await emit("Extracting assignment/page links...")
+    cursor = await db.execute(
+        """
+        SELECT id, description
+        FROM nodes
+        WHERE source = 'canvas_api'
+          AND type IN ('assignment', 'page')
+          AND description IS NOT NULL
+        """
+    )
+    link_sources = await cursor.fetchall()
+    for row in link_sources:
+        description = row["description"]
+        if not isinstance(description, str) or not description.strip():
+            continue
+        extracted = await _extract_and_store_links(str(row["id"]), description)
+        result.links_extracted += extracted
+
+    await emit(f"Extracted {result.links_extracted} links from assignment/page content")
+
     # ── Phase 5: Rubrics ───────────────────────────────────────────────────────
     await emit(f"Fetching {len(rubric_ids_needed)} rubrics...")
 
@@ -265,7 +288,8 @@ async def run_full_sync(
     await db.commit()
     await emit(
         f"Sync complete — {result.assignments} assignments, {result.pages} pages, "
-        f"{result.files} files, {result.rubrics_fetched} rubrics, "
+        f"{result.files} files, {result.links_extracted} links extracted, "
+        f"{result.rubrics_fetched} rubrics, "
         f"{result.rubrics_linked} rubric links"
     )
     return result

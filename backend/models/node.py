@@ -100,5 +100,6 @@ class CourseNodeSummary(BaseModel):
     title: str
     week: int | None = None
     module: str | None = None
+    rubric_id: str | None = None
     status: NodeStatus = NodeStatus.UNAUDITED
     finding_count: int = 0

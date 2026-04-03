@@ -235,6 +235,44 @@ function LinkRubricsButton({ onDone }: { onDone: () => Promise<void> }) {
   );
 }
 
+function RelinkContentButton({ onDone }: { onDone: () => Promise<void> }) {
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<{
+    nodes_processed: number;
+    links_extracted: number;
+    edges_total: number;
+  } | null>(null);
+
+  const handleRelink = async () => {
+    setLoading(true);
+    setResult(null);
+    try {
+      const r = await api.relinkContent();
+      setResult(r);
+      await onDone();
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="space-y-1">
+      <Button variant="outline" size="sm" className="w-full" onClick={handleRelink} disabled={loading}>
+        {loading ? (
+          <><Loader2 className="size-3.5 mr-1.5 animate-spin" />Relinking content…</>
+        ) : (
+          <><Link2 className="size-3.5 mr-1.5" />Re-run Smart Link Extraction</>
+        )}
+      </Button>
+      {result && (
+        <p className="text-[11px] text-muted-foreground text-center">
+          Scanned {result.nodes_processed} nodes, extracted {result.links_extracted} links, {result.edges_total} active edges
+        </p>
+      )}
+    </div>
+  );
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Page Component                                                            */
 /* -------------------------------------------------------------------------- */
@@ -1198,6 +1236,7 @@ export default function IngestPage() {
 
             <DedupButton onDone={async () => { await refreshNodeCounts(); await refreshAssignableData(); }} />
             <LinkRubricsButton onDone={async () => { await refreshNodeCounts(); }} />
+            <RelinkContentButton onDone={async () => { await refreshNodeCounts(); }} />
           </div>
         </GlassCard>
       </div>

@@ -134,7 +134,10 @@ async def list_nodes(
     status: str | None = None,
 ) -> list[CourseNodeSummary]:
     db = await get_db()
-    query = "SELECT id, type, title, week, module, status, finding_count FROM nodes WHERE 1=1"
+    query = (
+        "SELECT id, type, title, week, module, rubric_id, status, finding_count "
+        "FROM nodes WHERE 1=1"
+    )
     params: list[object] = []
 
     if node_type is not None:
@@ -259,7 +262,15 @@ async def get_stale_nodes() -> list[CourseNodeSummary]:
     """Nodes whose content changed since last audit (content_hash differs)."""
     db = await get_db()
     cursor = await db.execute("""
-        SELECT DISTINCT n.id, n.type, n.title, n.week, n.module, n.status, n.finding_count
+        SELECT DISTINCT
+            n.id,
+            n.type,
+            n.title,
+            n.week,
+            n.module,
+            n.rubric_id,
+            n.status,
+            n.finding_count
         FROM nodes n
         JOIN findings f ON f.assignment_id = n.id AND f.status = 'active'
         WHERE n.content_hash != f.content_hash_at_creation

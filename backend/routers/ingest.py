@@ -467,6 +467,40 @@ async def sync_rubrics() -> dict[str, object]:
     }
 
 
+@router.post("/relink-content")
+async def relink_content() -> dict[str, int]:
+    """Re-extract assignment/page HTML links into node_links and rebuild graph edges."""
+    from backend.db import get_db
+    from backend.services.ingest.canvas_live import _extract_and_store_links
+
+    db = await get_db()
+    cursor = await db.execute(
+        """
+        SELECT id, description
+        FROM nodes
+        WHERE type IN ('assignment', 'page')
+          AND description IS NOT NULL
+        """
+    )
+    sources = await cursor.fetchall()
+
+    links_extracted = 0
+    nodes_processed = 0
+    for row in sources:
+        description = row["description"]
+        if not isinstance(description, str) or not description.strip():
+            continue
+        links_extracted += await _extract_and_store_links(str(row["id"]), description)
+        nodes_processed += 1
+
+    graph_result = await rebuild_graph()
+    return {
+        "nodes_processed": nodes_processed,
+        "links_extracted": links_extracted,
+        "edges_total": graph_result.total_edges,
+    }
+
+
 @router.post("/clear-all")
 async def clear_all() -> dict[str, int]:
     """Wipe every table so the user can start a fresh ingest from scratch."""
