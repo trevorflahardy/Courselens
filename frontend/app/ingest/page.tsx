@@ -252,18 +252,81 @@ export default function IngestPage() {
     }
   }, [selectedFileId]);
 
-  /* ---- initial fetch ---- */
+  /* ---- Canvas Sync handlers ---- */
+  const startPolling = useCallback(() => {
+    if (syncPollRef.current) clearInterval(syncPollRef.current);
+    syncPollRef.current = setInterval(async () => {
+      try {
+        const status = await api.getIngestStatus();
+        const stage = (status.stage ?? "") as SyncStage;
+        if (SYNC_STAGE_ORDER.includes(stage)) setSyncStage(stage);
+        if (status.feed) setSyncFeed(status.feed);
+        if (status.status === "done") {
+          clearInterval(syncPollRef.current!);
+          syncPollRef.current = null;
+          setSyncStage("done");
+          setLastRun(status.last_run ?? new Date().toISOString());
+          pushLog("sync", "Canvas live sync", "ok");
+          await refreshNodeCounts();
+          await refreshAssignableData();
+        } else if (status.status === "error") {
+          clearInterval(syncPollRef.current!);
+          syncPollRef.current = null;
+          setSyncStage("error");
+          console.error("[Canvas sync] Backend reported error:", status.message ?? "unknown");
+          setSyncError(status.message ?? "Sync failed — check backend logs");
+          pushLog("sync", "Canvas live sync", "error");
+        }
+      } catch (pollErr) {
+        console.warn("[Canvas sync] Poll error (will retry):", pollErr);
+      }
+    }, 2000);
+  }, [pushLog, refreshNodeCounts, refreshAssignableData]);
+
+  const startSync = useCallback(async () => {
+    setSyncStage("fetching_modules");
+    setSyncError(null);
+    setSyncFeed([]);
+    try {
+      await api.startIngest();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to start Canvas sync";
+      console.error("[Canvas sync] POST /api/ingest/course failed:", msg);
+      setSyncStage("error");
+      setSyncError(msg);
+      pushLog("sync", "Canvas live sync", "error");
+      return;
+    }
+    startPolling();
+  }, [pushLog, startPolling]);
+
+  // Always hold the latest startPolling without it being a dep
+  const startPollingRef = useRef(startPolling);
+  useEffect(() => { startPollingRef.current = startPolling; }, [startPolling]);
+
+  /* ---- initial fetch (mount only) ---- */
   useEffect(() => {
     api.getIngestStatus().then((s) => {
       if (s.last_run) setLastRun(s.last_run);
+      if (s.feed) setSyncFeed(s.feed);
+      if (s.status === "running") {
+        const stage = (s.stage ?? "fetching_modules") as SyncStage;
+        setSyncStage(SYNC_STAGE_ORDER.includes(stage) ? stage : "fetching_modules");
+        startPollingRef.current();
+      } else if (s.status === "done") {
+        setSyncStage("done");
+      } else if (s.status === "error") {
+        setSyncStage("error");
+        setSyncError(s.message ?? "Sync failed — check backend logs");
+      }
     }).catch(() => {});
     refreshNodeCounts();
     refreshAssignableData();
-
     api.getGraph().then((g) => {
       setTotalEdges(g.edges.length);
     }).catch(() => {});
-  }, [refreshNodeCounts, refreshAssignableData]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // intentionally empty — runs once on mount only
 
   /* ---- ZIP Upload handlers ---- */
   const handleFile = useCallback((file: File) => {
@@ -311,56 +374,6 @@ export default function IngestPage() {
       setUploading(false);
     }
   }, [selectedFile, pushLog, refreshNodeCounts, refreshAssignableData]);
-
-  /* ---- Canvas Sync handlers ---- */
-  const startSync = useCallback(async () => {
-    setSyncStage("fetching_modules");
-    setSyncError(null);
-    setSyncFeed([]);
-    if (syncPollRef.current) clearInterval(syncPollRef.current);
-
-    try {
-      await api.startIngest();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Failed to start Canvas sync";
-      console.error("[Canvas sync] POST /api/ingest/course failed:", msg);
-      setSyncStage("error");
-      setSyncError(msg);
-      pushLog("sync", "Canvas live sync", "error");
-      return;
-    }
-
-    // Poll backend status until done or error
-    syncPollRef.current = setInterval(async () => {
-      try {
-        const status = await api.getIngestStatus();
-        const stage = (status.stage ?? "") as SyncStage;
-        if (SYNC_STAGE_ORDER.includes(stage)) {
-          setSyncStage(stage);
-        }
-        if (status.feed) {
-          setSyncFeed(status.feed);
-        }
-        if (status.status === "done") {
-          if (syncPollRef.current) clearInterval(syncPollRef.current);
-          setSyncStage("done");
-          setLastRun(status.last_run ?? new Date().toISOString());
-          pushLog("sync", "Canvas live sync", "ok");
-          await refreshNodeCounts();
-          await refreshAssignableData();
-        } else if (status.status === "error") {
-          if (syncPollRef.current) clearInterval(syncPollRef.current);
-          setSyncStage("error");
-          console.error("[Canvas sync] Backend reported error:", status.message ?? "unknown");
-          setSyncError(status.message ?? "Sync failed — check backend logs");
-          pushLog("sync", "Canvas live sync", "error");
-        }
-      } catch (pollErr) {
-        // Transient poll error — log but keep polling
-        console.warn("[Canvas sync] Poll error (will retry):", pollErr);
-      }
-    }, 2000);
-  }, [pushLog, refreshNodeCounts, refreshAssignableData]);
 
   useEffect(() => {
     return () => {

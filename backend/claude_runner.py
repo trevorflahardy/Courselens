@@ -58,6 +58,9 @@ async def start_audit_run(
         "--output-format",
         "stream-json",
         "--verbose",
+        "--dangerously-skip-permissions",
+        "--max-turns",
+        "150",
     ]
 
     if allowed_tools:
@@ -73,6 +76,7 @@ async def start_audit_run(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=16 * 1024 * 1024,  # 16 MB — Claude JSON lines can be large
         )
         state.process = process
         logger.info("Started Claude subprocess for run %s (pid=%s)", run_id, process.pid)
