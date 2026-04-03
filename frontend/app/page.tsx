@@ -124,7 +124,7 @@ const quickActions = [
 /* -------------------------------------------------------------------------- */
 
 export default function DashboardPage() {
-  const { stats, findings, loading, fetchStats, fetchFindings } = useAuditStore();
+  const { stats, findings, loading, errors, fetchStats, fetchFindings } = useAuditStore();
 
   useEffect(() => {
     fetchStats();
@@ -145,6 +145,11 @@ export default function DashboardPage() {
       </div>
 
       {/* Stat cards */}
+      {errors.stats && (
+        <div className="rounded-lg border border-red-500/25 bg-red-500/10 px-4 py-3 text-[12px] text-red-200">
+          Unable to load dashboard stats: {errors.stats}
+        </div>
+      )}
       <div className="grid grid-cols-5 gap-3">
         {loading.stats || !statCards
           ? Array.from({ length: 5 }).map((_, i) => <StatSkeleton key={i} />)
@@ -197,6 +202,11 @@ export default function DashboardPage() {
             <h3 className="text-sm font-bold">Recent Findings</h3>
           </div>
           <div className="px-5 pb-5">
+            {errors.findings && (
+              <div className="mb-3 rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-[12px] text-amber-200">
+                Unable to load recent findings: {errors.findings}
+              </div>
+            )}
             <div className="space-y-2">
               {loading.findings ? (
                 Array.from({ length: 3 }).map((_, i) => <FindingSkeleton key={i} />)

@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.config import settings
-from backend.db import close_db, init_db
+from backend.db import close_db, get_db, init_db
 from backend.routers import audit, findings, graph, ingest, nodes
 
 
@@ -44,3 +44,32 @@ app.include_router(ingest.router)
 @app.get("/api/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/api/stats")
+async def stats() -> dict[str, int]:
+    """Dashboard summary metrics used by the frontend overview page."""
+    db = await get_db()
+
+    async def _count(query: str, params: tuple[object, ...] = ()) -> int:
+        cursor = await db.execute(query, params)
+        row = await cursor.fetchone()
+        return int(row[0]) if row else 0
+
+    total_nodes = await _count("SELECT COUNT(*) FROM nodes")
+    gap_count = await _count("SELECT COUNT(*) FROM nodes WHERE status = ?", ("gap",))
+    warn_count = await _count("SELECT COUNT(*) FROM nodes WHERE status = ?", ("warn",))
+    ok_count = await _count("SELECT COUNT(*) FROM nodes WHERE status = ?", ("ok",))
+    unaudited_count = await _count("SELECT COUNT(*) FROM nodes WHERE status = ?", ("unaudited",))
+    total_findings = await _count("SELECT COUNT(*) FROM findings WHERE status = ?", ("active",))
+    total_edges = await _count("SELECT COUNT(*) FROM edges WHERE status = ?", ("active",))
+
+    return {
+        "total_nodes": total_nodes,
+        "gap_count": gap_count,
+        "warn_count": warn_count,
+        "ok_count": ok_count,
+        "unaudited_count": unaudited_count,
+        "total_findings": total_findings,
+        "total_edges": total_edges,
+    }

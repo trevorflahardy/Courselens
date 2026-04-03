@@ -3,10 +3,17 @@
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...options,
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      headers: { "Content-Type": "application/json" },
+      ...options,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown network error";
+    throw new Error(`Network error while calling ${path}: ${message}`);
+  }
+
   if (!res.ok) {
     throw new Error(`API ${res.status}: ${await res.text()}`);
   }

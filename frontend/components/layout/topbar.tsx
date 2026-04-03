@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 
 const routeTitles: Record<string, string> = {
@@ -26,6 +27,11 @@ function getBreadcrumb(pathname: string): { title: string; parent?: string } {
 export function TopBar() {
   const pathname = usePathname();
   const { title, parent } = getBreadcrumb(pathname);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   return (
     <header className="sticky top-0 z-30 flex h-12 items-center justify-between border-b border-[oklch(0.35_0.03_270_/_0.2)] bg-[oklch(0.13_0.02_280_/_0.6)] backdrop-blur-xl px-8">
@@ -44,12 +50,14 @@ export function TopBar() {
 
       {/* Quick actions */}
       <div className="flex items-center gap-2">
-        <button className="flex items-center gap-1.5 rounded-lg border border-[oklch(0.35_0.03_270_/_0.3)] bg-[oklch(0.18_0.015_270_/_0.4)] px-2.5 py-1 text-[12px] font-medium text-muted-foreground/70 hover:text-foreground hover:bg-[oklch(0.22_0.02_270_/_0.5)] hover:border-[oklch(0.45_0.06_270_/_0.3)] transition-all duration-200">
-          <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182" />
-          </svg>
-          Refresh
-        </button>
+        {mounted ? (
+          <button className="flex items-center gap-1.5 rounded-lg border border-[oklch(0.35_0.03_270_/_0.3)] bg-[oklch(0.18_0.015_270_/_0.4)] px-2.5 py-1 text-[12px] font-medium text-muted-foreground/70 hover:text-foreground hover:bg-[oklch(0.22_0.02_270_/_0.5)] hover:border-[oklch(0.45_0.06_270_/_0.3)] transition-all duration-200">
+            <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182" />
+            </svg>
+            Refresh
+          </button>
+        ) : null}
       </div>
     </header>
   );

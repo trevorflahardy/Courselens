@@ -35,9 +35,10 @@ export default function RootLayout({
   return (
     <html
       lang="en"
+      suppressHydrationWarning
       className={`${geistSans.variable} ${geistMono.variable} ${inter.variable} dark h-full antialiased`}
     >
-      <body className="min-h-full flex">
+      <body suppressHydrationWarning className="min-h-full flex">
         {/* Animated ambient gradient background */}
         <div className="ambient-bg" aria-hidden="true" />
 
