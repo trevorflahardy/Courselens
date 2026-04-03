@@ -15,6 +15,11 @@ import logging
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
+
+# Project root — where .mcp.json lives. Claude subprocess must run here so it
+# auto-discovers .mcp.json and loads the audit MCP alongside canvas-api.
+_PROJECT_ROOT = str(Path(__file__).parent.parent)
 
 logger = logging.getLogger(__name__)
 
@@ -71,11 +76,13 @@ async def start_audit_run(
     _active_runs[run_id] = state
 
     try:
-        # create_subprocess_exec passes args as a list — no shell injection risk
+        # cwd=_PROJECT_ROOT so Claude auto-discovers .mcp.json and loads both
+        # the audit MCP and canvas-api in the subprocess session.
         process = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            cwd=_PROJECT_ROOT,
             limit=16 * 1024 * 1024,  # 16 MB — Claude JSON lines can be large
         )
         state.process = process
