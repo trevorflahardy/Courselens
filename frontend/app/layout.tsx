@@ -37,11 +37,17 @@ export default function RootLayout({
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} ${inter.variable} dark h-full antialiased`}
     >
-      <body className="min-h-full flex bg-background">
-        <Sidebar />
-        <div className="flex flex-1 flex-col min-h-screen ml-60">
-          <TopBar />
-          <main className="flex-1 px-8 py-6">{children}</main>
+      <body className="min-h-full flex">
+        {/* Animated ambient gradient background */}
+        <div className="ambient-bg" aria-hidden="true" />
+
+        {/* Content layer above background */}
+        <div className="relative z-10 flex min-h-full w-full">
+          <Sidebar />
+          <div className="flex flex-1 flex-col min-h-screen ml-60">
+            <TopBar />
+            <main className="flex-1 px-8 py-6">{children}</main>
+          </div>
         </div>
       </body>
     </html>

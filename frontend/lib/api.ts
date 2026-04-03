@@ -51,15 +51,36 @@ export const api = {
 
   // Audit
   startAudit: (assignmentId: string) =>
-    request<{ run_id: string }>(`/api/audit/${assignmentId}`, { method: "POST" }),
+    request<AuditRun>(`/api/audit/${assignmentId}`, { method: "POST" }),
 
   listAuditRuns: () => request<AuditRun[]>("/api/audit/runs"),
 
   getAuditRun: (runId: string) => request<AuditRun>(`/api/audit/runs/${runId}`),
+
+  startAuditAll: (batchSize = 4) =>
+    request<{ total: number; completed: number; errors: string[] }>(
+      `/api/audit/all?batch_size=${batchSize}`,
+      { method: "POST" },
+    ),
+
+  getAuditSummary: () =>
+    request<Record<string, unknown>>("/api/audit/summary"),
 
   // Dashboard
   getStats: () => request<DashboardStats>("/api/stats"),
 
   // Ingest
   startIngest: () => request<{ status: string }>("/api/ingest/course", { method: "POST" }),
+
+  uploadZip: (file: File) => {
+    const form = new FormData();
+    form.append("file", file);
+    return fetch(`${API_BASE}/api/ingest/zip`, { method: "POST", body: form }).then(r => r.json());
+  },
+
+  rebuildGraph: () =>
+    request<{ edges: number; orphans: number }>("/api/ingest/rebuild-graph", { method: "POST" }),
+
+  getIngestStatus: () =>
+    request<{ status: string; nodes_processed?: number; last_run?: string }>("/api/ingest/status"),
 };

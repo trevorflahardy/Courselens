@@ -55,10 +55,10 @@ export function Sidebar() {
   const pathname = usePathname();
 
   return (
-    <aside className="fixed left-0 top-0 z-40 flex h-screen w-60 flex-col border-r border-white/[0.08] bg-sidebar">
+    <aside className="fixed left-0 top-0 z-40 flex h-screen w-60 flex-col border-r border-sidebar-border bg-sidebar backdrop-blur-xl">
       {/* Brand */}
       <div className="flex h-14 items-center gap-3 px-5">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/20 ring-1 ring-primary/30">
+        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/20 ring-1 ring-primary/30 shadow-[0_0_12px_oklch(0.7_0.18_265_/_0.2)]">
           <svg className="h-4 w-4 text-primary" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75m-3-7.036A11.959 11.959 0 0 1 3.598 6 11.99 11.99 0 0 0 3 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285Z" />
           </svg>
@@ -79,14 +79,17 @@ export function Sidebar() {
               key={item.href}
               href={item.href}
               className={`
-                flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium
-                transition-all duration-150
+                relative flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium
+                transition-all duration-200
                 ${isActive
-                  ? "bg-primary/15 text-primary shadow-sm shadow-primary/5"
-                  : "text-muted-foreground hover:text-foreground hover:bg-white/[0.04]"
+                  ? "bg-primary/15 text-primary shadow-[0_0_16px_oklch(0.7_0.18_265_/_0.15),inset_0_1px_0_oklch(1_0_0_/_0.05)]"
+                  : "text-muted-foreground hover:text-foreground hover:bg-white/[0.06] hover:shadow-[0_0_10px_oklch(0.6_0.2_280_/_0.06)]"
                 }
               `}
             >
+              {isActive && (
+                <span className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded-full bg-primary shadow-[0_0_8px_oklch(0.7_0.18_265_/_0.5)]" />
+              )}
               <span className={isActive ? "text-primary" : ""}>{item.icon}</span>
               {item.label}
             </Link>
@@ -95,7 +98,7 @@ export function Sidebar() {
       </nav>
 
       {/* Footer */}
-      <div className="border-t border-white/[0.06] px-5 py-3.5">
+      <div className="border-t border-sidebar-border px-5 py-3.5">
         <div className="flex items-center gap-2">
           <span className="relative flex h-2 w-2">
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
