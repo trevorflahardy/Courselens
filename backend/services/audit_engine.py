@@ -79,47 +79,49 @@ def _build_pass1_prompt(
     if rubric_text:
         parts.append(f"\n**Rubric:**\n```\n{rubric_text[:4000]}\n```")
 
-    parts.extend([
-        "",
-        "## Pass 1 — Standalone Clarity Audit",
-        "",
-        "Analyze this assignment as if you are a student seeing it for the first time.",
-        "For EACH issue you find, call `emit_finding` with the appropriate fields.",
-        "",
-        "Check the following and emit a finding for each problem:",
-        "",
-        "1. **Ambiguous instructions** — Is any sentence open to multiple interpretations?",
-        "   Quote the exact text that is ambiguous and explain why.",
-        "2. **Missing context** — Are tools, templates, file formats, or software assumed",
-        "   but never introduced or linked?",
-        "3. **Submission format** — Is the required file type, naming convention, and",
-        "   submission location clearly specified?",
-        "4. **Rubric alignment** — For each rubric criterion: does it appear explicitly",
-        "   in the instructions? Are any criteria using undefined terms ('quality',",
-        "   'professionalism') without context for what those mean?",
-        "5. **Point weight balance** — Is >60% of the grade on a single criterion?",
-        "   If so, is that intentional and clear to the student?",
-        "6. **Self-sufficiency** — Could a student complete this knowing ONLY what's on",
-        "   this page? What prior knowledge is assumed but not stated?",
-        "7. **Broken references** — Are there links to files, pages, or external",
-        "   resources that appear broken or inaccessible?",
-        "",
-        "## Finding Emission Rules",
-        "",
-        "- EVERY finding MUST include `evidence`: the exact quoted text from the assignment.",
-        "- NEVER say 'could be clearer' without explaining exactly what is ambiguous.",
-        "- Findings must be **actionable** — an instructor should know exactly what to fix.",
-        "- Use these severity levels:",
-        "  - `gap`: Must fix — students will be confused or unable to complete",
-        "  - `warn`: Should review — potential issue that may cause problems",
-        "  - `info`: Observation — minor suggestion for improvement",
-        "  - `ok`: Verified correct — explicitly noting something is well done",
-        "",
-        f"Use `audit_run_id`: `{run_id}` and `pass_number`: 1 for all findings.",
-        f"Use `assignment_id`: `{node_id}` for all findings.",
-        "",
-        "After completing your analysis, output a brief summary of what you found.",
-    ])
+    parts.extend(
+        [
+            "",
+            "## Pass 1 — Standalone Clarity Audit",
+            "",
+            "Analyze this assignment as if you are a student seeing it for the first time.",
+            "For EACH issue you find, call `emit_finding` with the appropriate fields.",
+            "",
+            "Check the following and emit a finding for each problem:",
+            "",
+            "1. **Ambiguous instructions** — Is any sentence open to multiple interpretations?",
+            "   Quote the exact text that is ambiguous and explain why.",
+            "2. **Missing context** — Are tools, templates, file formats, or software assumed",
+            "   but never introduced or linked?",
+            "3. **Submission format** — Is the required file type, naming convention, and",
+            "   submission location clearly specified?",
+            "4. **Rubric alignment** — For each rubric criterion: does it appear explicitly",
+            "   in the instructions? Are any criteria using undefined terms ('quality',",
+            "   'professionalism') without context for what those mean?",
+            "5. **Point weight balance** — Is >60% of the grade on a single criterion?",
+            "   If so, is that intentional and clear to the student?",
+            "6. **Self-sufficiency** — Could a student complete this knowing ONLY what's on",
+            "   this page? What prior knowledge is assumed but not stated?",
+            "7. **Broken references** — Are there links to files, pages, or external",
+            "   resources that appear broken or inaccessible?",
+            "",
+            "## Finding Emission Rules",
+            "",
+            "- EVERY finding MUST include `evidence`: the exact quoted text from the assignment.",
+            "- NEVER say 'could be clearer' without explaining exactly what is ambiguous.",
+            "- Findings must be **actionable** — an instructor should know exactly what to fix.",
+            "- Use these severity levels:",
+            "  - `gap`: Must fix — students will be confused or unable to complete",
+            "  - `warn`: Should review — potential issue that may cause problems",
+            "  - `info`: Observation — minor suggestion for improvement",
+            "  - `ok`: Verified correct — explicitly noting something is well done",
+            "",
+            f"Use `audit_run_id`: `{run_id}` and `pass_number`: 1 for all findings.",
+            f"Use `assignment_id`: `{node_id}` for all findings.",
+            "",
+            "After completing your analysis, output a brief summary of what you found.",
+        ]
+    )
     return "\n".join(parts)
 
 
@@ -142,38 +144,42 @@ def _build_pass2_prompt(
     ]
 
     if description:
-        parts.append(f"**Assignment content (first 3000 chars):**\n```html\n{description[:3000]}\n```")
+        parts.append(
+            f"**Assignment content (first 3000 chars):**\n```html\n{description[:3000]}\n```"
+        )
 
-    parts.extend([
-        "",
-        "## Related Nodes (from dependency graph and prior weeks)",
-        "",
-        neighbor_summaries if neighbor_summaries else "_(no related nodes found)_",
-        "",
-        "## Check for these issues:",
-        "",
-        "1. **Implicit prerequisites** — Does this assignment assume knowledge or skills",
-        "   taught in a prior assignment, but never states the dependency?",
-        "   → `finding_type`: `implicit_prerequisite`",
-        "2. **Assumption gaps** — Does this assignment assume the student has a specific",
-        "   artifact (report, code, data file) from a prior week?",
-        "   → `finding_type`: `assumption_gap`",
-        "3. **Format mismatches** — Does a prior assignment produce output in a format",
-        "   incompatible with what this assignment expects as input?",
-        "   → `finding_type`: `format_mismatch`",
-        "4. **Orphan check** — If this is week > 1 and has NO incoming edges in the graph,",
-        "   flag it as potentially disconnected from the curriculum.",
-        "   → `finding_type`: `orphan`",
-        "",
-        "Use `nodes_read` or `nodes_read_many` to fetch full content of related nodes if needed.",
-        "Use `graph_get_neighbors` to explore the dependency graph.",
-        "",
-        f"Use `audit_run_id`: `{run_id}` and `pass_number`: 2 for all findings.",
-        f"Use `assignment_id`: `{node_id}` for all findings.",
-        "",
-        "If a dependency exists and IS properly stated, emit an `ok` finding noting the healthy link.",
-        "After analysis, output a brief summary.",
-    ])
+    parts.extend(
+        [
+            "",
+            "## Related Nodes (from dependency graph and prior weeks)",
+            "",
+            neighbor_summaries if neighbor_summaries else "_(no related nodes found)_",
+            "",
+            "## Check for these issues:",
+            "",
+            "1. **Implicit prerequisites** — Does this assignment assume knowledge or skills",
+            "   taught in a prior assignment, but never states the dependency?",
+            "   → `finding_type`: `implicit_prerequisite`",
+            "2. **Assumption gaps** — Does this assignment assume the student has a specific",
+            "   artifact (report, code, data file) from a prior week?",
+            "   → `finding_type`: `assumption_gap`",
+            "3. **Format mismatches** — Does a prior assignment produce output in a format",
+            "   incompatible with what this assignment expects as input?",
+            "   → `finding_type`: `format_mismatch`",
+            "4. **Orphan check** — If this is week > 1 and has NO incoming edges in the graph,",
+            "   flag it as potentially disconnected from the curriculum.",
+            "   → `finding_type`: `orphan`",
+            "",
+            "Use `nodes_read` or `nodes_read_many` to fetch full content of related nodes if needed.",
+            "Use `graph_get_neighbors` to explore the dependency graph.",
+            "",
+            f"Use `audit_run_id`: `{run_id}` and `pass_number`: 2 for all findings.",
+            f"Use `assignment_id`: `{node_id}` for all findings.",
+            "",
+            "If a dependency exists and IS properly stated, emit an `ok` finding noting the healthy link.",
+            "After analysis, output a brief summary.",
+        ]
+    )
     return "\n".join(parts)
 
 
@@ -197,43 +203,47 @@ def _build_pass3_prompt(
     ]
 
     if description:
-        parts.append(f"**Assignment content (first 2000 chars):**\n```html\n{description[:2000]}\n```")
+        parts.append(
+            f"**Assignment content (first 2000 chars):**\n```html\n{description[:2000]}\n```"
+        )
 
-    parts.extend([
-        "",
-        "## Downstream Nodes (assignments that depend on this one)",
-        "",
-        downstream_summaries if downstream_summaries else "_(no downstream nodes found — this may be a terminal assignment)_",
-        "",
-        "## Check for these issues:",
-        "",
-        "1. **Cascade risk** — If a student does poorly on this assignment, would it",
-        "   break a downstream assignment? How severe is the impact?",
-        "   → `finding_type`: `cascade_risk`",
-        "2. **Format mismatch** — Does this assignment's output format NOT match what",
-        "   a downstream assignment expects as input?",
-        "   → `finding_type`: `format_mismatch`",
-        "3. **Curriculum gap** — Is there a >2 week gap between this and the next",
-        "   related assignment with no bridging content?",
-        "   → `finding_type`: `curriculum_gap`",
-        "",
-        "Use `nodes_read` to fetch full content of downstream nodes if needed.",
-        "Use `graph_get_neighbors` to explore further downstream.",
-        "",
-        f"Use `audit_run_id`: `{run_id}` and `pass_number`: 3 for all findings.",
-        f"Use `assignment_id`: `{node_id}` for all findings.",
-        "",
-        "After analysis, output a brief summary.",
-    ])
+    parts.extend(
+        [
+            "",
+            "## Downstream Nodes (assignments that depend on this one)",
+            "",
+            downstream_summaries
+            if downstream_summaries
+            else "_(no downstream nodes found — this may be a terminal assignment)_",
+            "",
+            "## Check for these issues:",
+            "",
+            "1. **Cascade risk** — If a student does poorly on this assignment, would it",
+            "   break a downstream assignment? How severe is the impact?",
+            "   → `finding_type`: `cascade_risk`",
+            "2. **Format mismatch** — Does this assignment's output format NOT match what",
+            "   a downstream assignment expects as input?",
+            "   → `finding_type`: `format_mismatch`",
+            "3. **Curriculum gap** — Is there a >2 week gap between this and the next",
+            "   related assignment with no bridging content?",
+            "   → `finding_type`: `curriculum_gap`",
+            "",
+            "Use `nodes_read` to fetch full content of downstream nodes if needed.",
+            "Use `graph_get_neighbors` to explore further downstream.",
+            "",
+            f"Use `audit_run_id`: `{run_id}` and `pass_number`: 3 for all findings.",
+            f"Use `assignment_id`: `{node_id}` for all findings.",
+            "",
+            "After analysis, output a brief summary.",
+        ]
+    )
     return "\n".join(parts)
 
 
 async def _get_rubric_text(node_id: str) -> str | None:
     """Fetch rubric criteria as readable text for a node."""
     db = await get_db()
-    cursor = await db.execute(
-        "SELECT rubric_id FROM nodes WHERE id = ?", (node_id,)
-    )
+    cursor = await db.execute("SELECT rubric_id FROM nodes WHERE id = ?", (node_id,))
     row = await cursor.fetchone()
     if not row or not row[0]:
         return None
@@ -399,15 +409,20 @@ async def run_single_audit(
     await db.commit()
 
     progress.status = "done"
-    progress.events.append({
-        "type": "done",
-        "run_id": run_id,
-        "total_findings": total,
-    })
+    progress.events.append(
+        {
+            "type": "done",
+            "run_id": run_id,
+            "total_findings": total,
+        }
+    )
 
     logger.info(
         "Audit complete: %s — P1=%d, P2=%d, P3=%d findings",
-        assignment_id, pass1_findings, pass2_findings, pass3_findings,
+        assignment_id,
+        pass1_findings,
+        pass2_findings,
+        pass3_findings,
     )
     return progress
 
@@ -488,10 +503,7 @@ async def run_audit_all(
 
     for i in range(0, len(nodes), batch_size):
         batch = nodes[i : i + batch_size]
-        tasks = [
-            run_single_audit(node.id)
-            for node in batch
-        ]
+        tasks = [run_single_audit(node.id) for node in batch]
 
         batch_results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -501,12 +513,16 @@ async def run_audit_all(
                 results.append({"node_id": node.id, "status": "error", "error": str(result)})
             else:
                 progress: AuditProgress = result
-                results.append({
-                    "node_id": node.id,
-                    "status": progress.status,
-                    "run_id": progress.run_id,
-                    "total_findings": progress.pass1_findings + progress.pass2_findings + progress.pass3_findings,
-                })
+                results.append(
+                    {
+                        "node_id": node.id,
+                        "status": progress.status,
+                        "run_id": progress.run_id,
+                        "total_findings": progress.pass1_findings
+                        + progress.pass2_findings
+                        + progress.pass3_findings,
+                    }
+                )
 
     return {
         "total_audited": len(nodes),
@@ -566,9 +582,7 @@ async def summarize_findings() -> dict[str, object]:
     pass_dist = {f"pass_{row[0]}": row[1] for row in await cursor.fetchall()}
 
     # Total counts
-    cursor = await db.execute(
-        "SELECT COUNT(*) FROM findings WHERE status = 'active'"
-    )
+    cursor = await db.execute("SELECT COUNT(*) FROM findings WHERE status = 'active'")
     total_active = (await cursor.fetchone())[0]
 
     cursor = await db.execute("SELECT COUNT(*) FROM audit_runs WHERE status = 'done'")

@@ -19,7 +19,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/ingest", tags=["ingest"])
 
 # Simple status tracking — includes stage, feed, and last_run after a sync completes
-_ingest_status: dict[str, object] = {"status": "idle", "message": "No ingestion in progress", "feed": []}
+_ingest_status: dict[str, object] = {
+    "status": "idle",
+    "message": "No ingestion in progress",
+    "feed": [],
+}
 
 
 @router.post("/zip")
@@ -109,12 +113,20 @@ async def _run_python_canvas_sync() -> None:
     course_id = settings.canvas_course_id
     if not course_id:
         logger.error("Canvas sync aborted: canvas_course_id is not set in .env")
-        _ingest_status = {"status": "error", "stage": "error", "message": "canvas_course_id not set in .env"}
+        _ingest_status = {
+            "status": "error",
+            "stage": "error",
+            "message": "canvas_course_id not set in .env",
+        }
         return
 
     if not settings.canvas_api_token:
         logger.error("Canvas sync aborted: canvas_api_token is not set in .env")
-        _ingest_status = {"status": "error", "stage": "error", "message": "canvas_api_token not set in .env"}
+        _ingest_status = {
+            "status": "error",
+            "stage": "error",
+            "message": "canvas_api_token not set in .env",
+        }
         return
 
     logger.info("Python Canvas sync starting for course %s", course_id)
@@ -135,20 +147,24 @@ async def _run_python_canvas_sync() -> None:
             on_progress=_on_progress,
         )
         if result.errors:
-            logger.warning("Canvas sync completed with %d errors: %s", len(result.errors), result.errors)
+            logger.warning(
+                "Canvas sync completed with %d errors: %s", len(result.errors), result.errors
+            )
 
         await _on_progress("Building dependency graph...")
         graph_result = await rebuild_graph()
-        _ingest_status.update({
-            "status": "done",
-            "stage": "done",
-            "last_run": datetime.now().isoformat(),
-            "message": (
-                f"Sync complete — {result.assignments} assignments, {result.pages} pages, "
-                f"{result.files} files, {result.rubrics_fetched} rubrics, "
-                f"{graph_result.total_edges} graph edges"
-            ),
-        })
+        _ingest_status.update(
+            {
+                "status": "done",
+                "stage": "done",
+                "last_run": datetime.now().isoformat(),
+                "message": (
+                    f"Sync complete — {result.assignments} assignments, {result.pages} pages, "
+                    f"{result.files} files, {result.rubrics_fetched} rubrics, "
+                    f"{graph_result.total_edges} graph edges"
+                ),
+            }
+        )
     except Exception as exc:
         logger.exception("Python Canvas sync background task raised an unhandled exception")
         _ingest_status.update({"status": "error", "stage": "error", "message": str(exc)})
@@ -169,15 +185,17 @@ async def list_processes() -> list[dict[str, object]]:
     for run in _active_runs.values():
         proc = run.process
         alive = proc is not None and proc.returncode is None
-        result.append({
-            "run_id": run.run_id,
-            "assignment_id": run.assignment_id,
-            "status": run.status,
-            "pid": proc.pid if proc else None,
-            "alive": alive,
-            "started_at": run.started_at,
-            "finished_at": run.finished_at,
-        })
+        result.append(
+            {
+                "run_id": run.run_id,
+                "assignment_id": run.assignment_id,
+                "status": run.status,
+                "pid": proc.pid if proc else None,
+                "alive": alive,
+                "started_at": run.started_at,
+                "finished_at": run.finished_at,
+            }
+        )
     return result
 
 
@@ -189,7 +207,9 @@ async def dedup_files() -> dict[str, int]:
 
     db = await get_db()
 
-    cursor = await db.execute("SELECT id, title, canvas_url, week, module, updated_at FROM nodes WHERE type = 'file'")
+    cursor = await db.execute(
+        "SELECT id, title, canvas_url, week, module, updated_at FROM nodes WHERE type = 'file'"
+    )
     rows = await cursor.fetchall()
 
     # Group by normalized title
@@ -221,11 +241,20 @@ async def dedup_files() -> dict[str, int]:
 
         for dup_id in duplicate_ids:
             # Re-point node_links
-            await db.execute("UPDATE node_links SET source_id = ? WHERE source_id = ?", (keeper_id, dup_id))
-            await db.execute("UPDATE node_links SET target_id = ? WHERE target_id = ?", (keeper_id, dup_id))
+            await db.execute(
+                "UPDATE node_links SET source_id = ? WHERE source_id = ?", (keeper_id, dup_id)
+            )
+            await db.execute(
+                "UPDATE node_links SET target_id = ? WHERE target_id = ?", (keeper_id, dup_id)
+            )
             # Re-point findings and audit_runs
-            await db.execute("UPDATE findings SET assignment_id = ? WHERE assignment_id = ?", (keeper_id, dup_id))
-            await db.execute("UPDATE audit_runs SET assignment_id = ? WHERE assignment_id = ?", (keeper_id, dup_id))
+            await db.execute(
+                "UPDATE findings SET assignment_id = ? WHERE assignment_id = ?", (keeper_id, dup_id)
+            )
+            await db.execute(
+                "UPDATE audit_runs SET assignment_id = ? WHERE assignment_id = ?",
+                (keeper_id, dup_id),
+            )
             # Re-point edges
             await db.execute("UPDATE edges SET source = ? WHERE source = ?", (keeper_id, dup_id))
             await db.execute("UPDATE edges SET target = ? WHERE target = ?", (keeper_id, dup_id))
@@ -287,7 +316,6 @@ async def link_rubrics() -> dict[str, object]:
 
     await db.commit()
     return {"linked": linked, "already_linked": already_linked, "missing_rubric_nodes": missing}
-
 
 
 @router.post("/sync-rubrics")
@@ -366,9 +394,7 @@ async def sync_rubrics() -> dict[str, object]:
     for rubric_id, primary_assignment_id in rubric_ids_to_fetch.items():
         rubric_node_id = f"rubric-{rubric_id}"
         try:
-            rdata = await asyncio.to_thread(
-                _get, f"{base}/courses/{course_id}/rubrics/{rubric_id}"
-            )
+            rdata = await asyncio.to_thread(_get, f"{base}/courses/{course_id}/rubrics/{rubric_id}")
             if not isinstance(rdata, dict):
                 raise ValueError("non-dict rubric response")
 
@@ -376,21 +402,26 @@ async def sync_rubrics() -> dict[str, object]:
             pts = rdata.get("points_possible")
             criteria = rdata.get("data") or []
 
-            criteria_json = _json.dumps([{
-                "id": c.get("id"),
-                "description": c.get("description", ""),
-                "long_description": _html.unescape(c.get("long_description") or ""),
-                "points": c.get("points"),
-                "ratings": [
+            criteria_json = _json.dumps(
+                [
                     {
-                        "id": r.get("id"),
-                        "label": r.get("description") or "",
-                        "description": r.get("description"),
-                        "points": r.get("points"),
+                        "id": c.get("id"),
+                        "description": c.get("description", ""),
+                        "long_description": _html.unescape(c.get("long_description") or ""),
+                        "points": c.get("points"),
+                        "ratings": [
+                            {
+                                "id": r.get("id"),
+                                "label": r.get("description") or "",
+                                "description": r.get("description"),
+                                "points": r.get("points"),
+                            }
+                            for r in c.get("ratings", [])
+                        ],
                     }
-                    for r in c.get("ratings", [])
-                ],
-            } for c in criteria])
+                    for c in criteria
+                ]
+            )
             rubric_nodes_upserted += 1
 
             # Upsert rubrics table (structured criteria)
@@ -404,7 +435,16 @@ async def sync_rubrics() -> dict[str, object]:
                 await db.execute(
                     "INSERT INTO rubrics (id, canvas_id, title, points_possible, criteria_json, assignment_id, created_at, updated_at) "
                     "VALUES (?,?,?,?,?,?,?,?)",
-                    (rubric_node_id, rubric_id, title, pts, criteria_json, primary_assignment_id, now, now),
+                    (
+                        rubric_node_id,
+                        rubric_id,
+                        title,
+                        pts,
+                        criteria_json,
+                        primary_assignment_id,
+                        now,
+                        now,
+                    ),
                 )
 
         except Exception as exc:
@@ -438,7 +478,16 @@ async def clear_all() -> dict[str, int]:
     try:
         await db.execute("PRAGMA foreign_keys=OFF")
         # Delete in FK-safe order. ingest_log references nodes(node_id), so it must be cleared first.
-        for table in ("findings", "audit_runs", "edges", "node_links", "files", "rubrics", "ingest_log", "nodes"):
+        for table in (
+            "findings",
+            "audit_runs",
+            "edges",
+            "node_links",
+            "files",
+            "rubrics",
+            "ingest_log",
+            "nodes",
+        ):
             cursor = await db.execute(f"DELETE FROM {table}")  # noqa: S608
             counts[f"{table}_deleted"] = cursor.rowcount
         await db.commit()

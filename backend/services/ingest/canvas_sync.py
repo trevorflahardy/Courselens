@@ -205,21 +205,26 @@ async def run_full_sync(
             pts = rd.get("points_possible")
             criteria = rd.get("data") or []
 
-            criteria_json = json.dumps([{
-                "id": c.get("id"),
-                "description": c.get("description", ""),
-                "long_description": html.unescape(c.get("long_description") or ""),
-                "points": c.get("points"),
-                "ratings": [
+            criteria_json = json.dumps(
+                [
                     {
-                        "id": r.get("id"),
-                        "label": r.get("description") or "",
-                        "description": r.get("description"),
-                        "points": r.get("points"),
+                        "id": c.get("id"),
+                        "description": c.get("description", ""),
+                        "long_description": html.unescape(c.get("long_description") or ""),
+                        "points": c.get("points"),
+                        "ratings": [
+                            {
+                                "id": r.get("id"),
+                                "label": r.get("description") or "",
+                                "description": r.get("description"),
+                                "points": r.get("points"),
+                            }
+                            for r in c.get("ratings", [])
+                        ],
                     }
-                    for r in c.get("ratings", [])
-                ],
-            } for c in criteria])
+                    for c in criteria
+                ]
+            )
 
             # Upsert rubrics table (structured criteria for audit engine)
             cursor = await db.execute("SELECT 1 FROM rubrics WHERE id=?", (rubric_node_id,))
@@ -232,7 +237,16 @@ async def run_full_sync(
                 await db.execute(
                     "INSERT INTO rubrics (id, canvas_id, title, points_possible, criteria_json, assignment_id, created_at, updated_at) "
                     "VALUES (?,?,?,?,?,?,?,?)",
-                    (rubric_node_id, rubric_id, title, pts, criteria_json, primary_assignment_id, now, now),
+                    (
+                        rubric_node_id,
+                        rubric_id,
+                        title,
+                        pts,
+                        criteria_json,
+                        primary_assignment_id,
+                        now,
+                        now,
+                    ),
                 )
 
             result.rubrics_fetched += 1
@@ -257,7 +271,9 @@ async def run_full_sync(
     return result
 
 
-async def _upsert_node(db: aiosqlite.Connection, node_id: str, data: dict[str, object], now: str) -> None:
+async def _upsert_node(
+    db: aiosqlite.Connection, node_id: str, data: dict[str, object], now: str
+) -> None:
     """Insert or merge a node directly via SQL (mirrors node_service.upsert_node logic)."""
     import hashlib
 
@@ -284,7 +300,13 @@ async def _upsert_node(db: aiosqlite.Connection, node_id: str, data: dict[str, o
             [*fields.values(), node_id],
         )
     else:
-        row = {"id": node_id, "created_at": now, "updated_at": now, "content_hash": content_hash, **data}
+        row = {
+            "id": node_id,
+            "created_at": now,
+            "updated_at": now,
+            "content_hash": content_hash,
+            **data,
+        }
         cols = ", ".join(row.keys())
         placeholders = ", ".join("?" for _ in row)
         await db.execute(

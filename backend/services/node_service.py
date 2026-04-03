@@ -14,6 +14,7 @@ def _normalize_title(title: object) -> str | None:
         return None
     return unquote_plus(title).strip()
 
+
 from backend.db import get_db
 from backend.models.node import CourseNode, CourseNodeSummary, NodeLink
 
@@ -82,9 +83,7 @@ async def get_assignment_rubric(node_id: str) -> dict[str, object] | None:
                 continue
             criterion_id = str(criterion.get("id") or f"criterion-{idx}")
             description = str(
-                criterion.get("long_description")
-                or criterion.get("description")
-                or ""
+                criterion.get("long_description") or criterion.get("description") or ""
             )
             points = float(criterion.get("points") or 0)
 
@@ -100,9 +99,7 @@ async def get_assignment_rubric(node_id: str) -> dict[str, object] | None:
                         {
                             "id": rating_id,
                             "label": str(
-                                rating.get("label")
-                                or rating_description
-                                or f"Rating {r_idx}"
+                                rating.get("label") or rating_description or f"Rating {r_idx}"
                             ),
                             "points": float(rating.get("points") or 0),
                             "description": str(rating_description) if rating_description else None,
