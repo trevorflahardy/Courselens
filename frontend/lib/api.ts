@@ -47,6 +47,8 @@ export const api = {
 
   getNodeLinks: (id: string) => request<NodeLink[]>(`/api/nodes/${id}/links`),
 
+  listAllNodeLinks: () => request<NodeLink[]>("/api/nodes/all-links"),
+
   updateNode: (id: string, body: Partial<CourseNode>) =>
     request<CourseNode>(`/api/nodes/${id}`, {
       method: "PATCH",

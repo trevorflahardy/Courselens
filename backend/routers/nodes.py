@@ -51,6 +51,11 @@ async def get_stale_nodes() -> list[CourseNodeSummary]:
     return await node_service.get_stale_nodes()
 
 
+@router.get("/all-links")
+async def list_all_node_links() -> list[NodeLink]:
+    return await node_service.list_node_links()
+
+
 @router.get("/{node_id}")
 async def get_node(node_id: str) -> CourseNode:
     node = await node_service.get_node(node_id)

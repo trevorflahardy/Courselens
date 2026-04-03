@@ -150,6 +150,13 @@ async def get_node_links(node_id: str) -> list[NodeLink]:
     return [NodeLink.model_validate(dict(r), strict=False) for r in rows]
 
 
+async def list_node_links() -> list[NodeLink]:
+    db = await get_db()
+    cursor = await db.execute("SELECT * FROM node_links")
+    rows = await cursor.fetchall()
+    return [NodeLink.model_validate(dict(r), strict=False) for r in rows]
+
+
 async def get_stale_nodes() -> list[CourseNodeSummary]:
     """Nodes whose content changed since last audit (content_hash differs)."""
     db = await get_db()

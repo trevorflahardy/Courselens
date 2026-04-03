@@ -3,7 +3,7 @@
 import { useEffect, useState, useMemo, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
-import type { CourseNodeSummary, NodeType, NodeStatus } from "@/lib/types";
+import type { CourseNodeSummary, NodeLink, NodeType, NodeStatus } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -121,9 +121,18 @@ function severityLabel(status: NodeStatus): string {
 // Component
 // ---------------------------------------------------------------------------
 
+interface DisplayNode {
+  key: string;
+  node: CourseNodeSummary;
+  moduleLabel: string | null;
+  isLinkedReference: boolean;
+  linkedViaAssignment: string | null;
+}
+
 export default function AssignmentsPage() {
   const router = useRouter();
   const [nodes, setNodes] = useState<CourseNodeSummary[]>([]);
+  const [nodeLinks, setNodeLinks] = useState<NodeLink[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -152,10 +161,10 @@ export default function AssignmentsPage() {
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    api
-      .listNodes()
-      .then((data) => {
+    Promise.all([api.listNodes(), api.listAllNodeLinks()])
+      .then(([data, links]) => {
         if (!cancelled) setNodes(data);
+        if (!cancelled) setNodeLinks(links);
       })
       .catch((e) => {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -189,12 +198,58 @@ export default function AssignmentsPage() {
 
   // Group by week
   const grouped = useMemo(() => {
-    const map = new Map<number | null, CourseNodeSummary[]>();
+    const map = new Map<number | null, DisplayNode[]>();
+    const primaryById = new Map(filtered.map((node) => [node.id, node]));
+    const assignmentById = new Map(
+      nodes.filter((node) => node.type === "assignment").map((node) => [node.id, node]),
+    );
+
     for (const n of filtered) {
       const key = n.week;
       if (!map.has(key)) map.set(key, []);
-      map.get(key)!.push(n);
+      map.get(key)!.push({
+        key: `primary-${n.id}`,
+        node: n,
+        moduleLabel: n.module,
+        isLinkedReference: false,
+        linkedViaAssignment: null,
+      });
     }
+
+    const seenReferenceKeys = new Set<string>();
+    for (const link of nodeLinks) {
+      if (!(link.link_type === "file" || link.link_type === "assignment")) {
+        continue;
+      }
+
+      const target = primaryById.get(link.target_id);
+      const sourceAssignment = assignmentById.get(link.source_id);
+      if (!target || !sourceAssignment) {
+        continue;
+      }
+
+      const sourceWeek = sourceAssignment.week;
+      const sourceModule = sourceAssignment.module;
+      if (sourceWeek === target.week && sourceModule === target.module) {
+        continue;
+      }
+
+      const dedupeKey = `${target.id}::${sourceAssignment.id}`;
+      if (seenReferenceKeys.has(dedupeKey)) {
+        continue;
+      }
+      seenReferenceKeys.add(dedupeKey);
+
+      if (!map.has(sourceWeek)) map.set(sourceWeek, []);
+      map.get(sourceWeek)!.push({
+        key: `linked-${target.id}-${sourceAssignment.id}`,
+        node: target,
+        moduleLabel: sourceModule ?? target.module,
+        isLinkedReference: true,
+        linkedViaAssignment: sourceAssignment.title,
+      });
+    }
+
     // Sort: numbered weeks ascending, null at end
     const entries = Array.from(map.entries()).sort((a, b) => {
       if (a[0] === null && b[0] === null) return 0;
@@ -202,8 +257,18 @@ export default function AssignmentsPage() {
       if (b[0] === null) return -1;
       return a[0] - b[0];
     });
+
+    for (const [, items] of entries) {
+      items.sort((a, b) => {
+        if (a.isLinkedReference !== b.isLinkedReference) {
+          return a.isLinkedReference ? 1 : -1;
+        }
+        return a.node.title.localeCompare(b.node.title);
+      });
+    }
+
     return entries;
-  }, [filtered]);
+  }, [filtered, nodeLinks, nodes]);
 
   // Active filters for pill display
   const activeFilters: { key: string; label: string; clear: () => void }[] = [];
@@ -573,7 +638,7 @@ function WeekGroup({
   onAssign,
 }: {
   week: number | null;
-  items: CourseNodeSummary[];
+  items: DisplayNode[];
   router: ReturnType<typeof useRouter>;
   onAssign?: (node: CourseNodeSummary) => void;
 }) {
@@ -592,12 +657,15 @@ function WeekGroup({
 
       {/* Card grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-        {items.map((node) => (
+        {items.map((item) => (
           <AssignmentCard
-            key={node.id}
-            node={node}
-            onClick={() => router.push(`/assignments/${node.id}`)}
-            onAssign={week === null ? onAssign : undefined}
+            key={item.key}
+            node={item.node}
+            moduleLabel={item.moduleLabel}
+            isLinkedReference={item.isLinkedReference}
+            linkedViaAssignment={item.linkedViaAssignment}
+            onClick={() => router.push(`/assignments/${item.node.id}`)}
+            onAssign={!item.isLinkedReference && week === null ? onAssign : undefined}
           />
         ))}
       </div>
@@ -607,10 +675,16 @@ function WeekGroup({
 
 function AssignmentCard({
   node,
+  moduleLabel,
+  isLinkedReference,
+  linkedViaAssignment,
   onClick,
   onAssign,
 }: {
   node: CourseNodeSummary;
+  moduleLabel: string | null;
+  isLinkedReference: boolean;
+  linkedViaAssignment: string | null;
   onClick: () => void;
   onAssign?: (node: CourseNodeSummary) => void;
 }) {
@@ -625,11 +699,19 @@ function AssignmentCard({
           onClick();
         }
       }}
-      className="group cursor-pointer rounded-xl border border-secondary/55 bg-secondary/28 p-4 text-left backdrop-blur-sm transition-all duration-200 hover:-translate-y-px hover:border-secondary/75 hover:bg-secondary/38 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
+      className={`group cursor-pointer rounded-xl border p-4 text-left backdrop-blur-sm transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70 ${
+        isLinkedReference
+          ? "border-white/16 bg-secondary/18 opacity-80 hover:border-white/28 hover:bg-secondary/24"
+          : "border-secondary/55 bg-secondary/28 hover:-translate-y-px hover:border-secondary/75 hover:bg-secondary/38"
+      }`}
     >
       <div className="flex items-start gap-3">
         {/* Type icon */}
-        <div className="mt-0.5 rounded-lg bg-secondary/50 border border-secondary/60 p-2 text-muted-foreground group-hover:text-foreground/80 transition-colors">
+        <div className={`mt-0.5 rounded-lg border p-2 text-muted-foreground transition-colors group-hover:text-foreground/80 ${
+          isLinkedReference
+            ? "bg-secondary/34 border-white/16"
+            : "bg-secondary/50 border-secondary/60"
+        }`}>
           {typeIcon(node.type)}
         </div>
 
@@ -640,8 +722,14 @@ function AssignmentCard({
           </p>
 
           {/* Module */}
-          {node.module && (
-            <p className="text-xs text-muted-foreground truncate">{node.module}</p>
+          {moduleLabel && (
+            <p className="text-xs text-muted-foreground truncate">{moduleLabel}</p>
+          )}
+
+          {isLinkedReference && linkedViaAssignment && (
+            <p className="text-[11px] text-muted-foreground/80 truncate">
+              Linked reference via {linkedViaAssignment}
+            </p>
           )}
 
           {/* Bottom row: badges */}
@@ -668,6 +756,12 @@ function AssignmentCard({
             <span className="text-[10px] text-muted-foreground/60 capitalize">
               {node.type}
             </span>
+
+            {isLinkedReference && (
+              <span className="inline-flex items-center rounded-full border border-white/20 bg-white/8 px-2 py-0.5 text-[10px] text-muted-foreground">
+                linked copy
+              </span>
+            )}
 
             {onAssign && (
               <button
