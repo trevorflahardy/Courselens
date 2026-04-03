@@ -182,6 +182,8 @@ export default function IngestPage() {
   /* ---- Canvas sync state ---- */
   const [syncStage, setSyncStage] = useState<SyncStage>("idle");
   const [syncError, setSyncError] = useState<string | null>(null);
+  const [syncFeed, setSyncFeed] = useState<string[]>([]);
+  const syncFeedRef = useRef<HTMLDivElement>(null);
   const syncPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   /* ---- Graph rebuild state ---- */
@@ -314,6 +316,7 @@ export default function IngestPage() {
   const startSync = useCallback(async () => {
     setSyncStage("fetching_modules");
     setSyncError(null);
+    setSyncFeed([]);
     if (syncPollRef.current) clearInterval(syncPollRef.current);
 
     try {
@@ -335,6 +338,9 @@ export default function IngestPage() {
         if (SYNC_STAGE_ORDER.includes(stage)) {
           setSyncStage(stage);
         }
+        if (status.feed) {
+          setSyncFeed(status.feed);
+        }
         if (status.status === "done") {
           if (syncPollRef.current) clearInterval(syncPollRef.current);
           setSyncStage("done");
@@ -345,9 +351,8 @@ export default function IngestPage() {
         } else if (status.status === "error") {
           if (syncPollRef.current) clearInterval(syncPollRef.current);
           setSyncStage("error");
-          const errMsg = (status as Record<string, unknown>).message as string | undefined;
-          console.error("[Canvas sync] Backend reported error:", errMsg ?? "unknown");
-          setSyncError(errMsg ?? "Sync failed — check backend logs");
+          console.error("[Canvas sync] Backend reported error:", status.message ?? "unknown");
+          setSyncError(status.message ?? "Sync failed — check backend logs");
           pushLog("sync", "Canvas live sync", "error");
         }
       } catch (pollErr) {
@@ -362,6 +367,13 @@ export default function IngestPage() {
       if (syncPollRef.current) clearInterval(syncPollRef.current);
     };
   }, []);
+
+  // Auto-scroll feed to bottom as new items arrive
+  useEffect(() => {
+    if (syncFeedRef.current) {
+      syncFeedRef.current.scrollTop = syncFeedRef.current.scrollHeight;
+    }
+  }, [syncFeed]);
 
   /* ---- Graph rebuild handler ---- */
   const handleRebuildGraph = useCallback(async () => {
@@ -638,6 +650,21 @@ export default function IngestPage() {
             {/* Progress bar during sync */}
             {(syncInProgress || syncStage === "done") && (
               <Progress value={syncProgress} />
+            )}
+
+            {/* Live feed */}
+            {syncFeed.length > 0 && (
+              <div
+                ref={syncFeedRef}
+                className="max-h-36 overflow-y-auto rounded-lg bg-black/20 border border-white/[0.06] p-2 space-y-0.5"
+              >
+                {syncFeed.map((line, i) => (
+                  <div key={i} className="flex items-start gap-1.5 text-[11px] font-mono text-muted-foreground/70">
+                    <span className="text-primary/40 shrink-0 mt-px">›</span>
+                    <span className="break-all">{line}</span>
+                  </div>
+                ))}
+              </div>
             )}
 
             {/* Status badge */}

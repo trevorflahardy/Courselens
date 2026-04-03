@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 
 from fastapi import FastAPI
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s %(levelname)-8s %(name)s — %(message)s",
+    datefmt="%H:%M:%S",
+)
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.config import settings

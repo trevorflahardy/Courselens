@@ -133,6 +133,20 @@ async def tail_run(run_id: str) -> AsyncGenerator[dict[str, object], None]:
             yield event
         return
 
+    # Drain stderr in the background so it never blocks stdout and logs in real time
+    stderr_lines: list[str] = []
+
+    async def _drain_stderr() -> None:
+        if state.process is None or state.process.stderr is None:
+            return
+        async for raw in state.process.stderr:
+            line = raw.decode().rstrip()
+            if line:
+                stderr_lines.append(line)
+                logger.warning("Claude stderr [%s]: %s", run_id, line)
+
+    stderr_task = asyncio.create_task(_drain_stderr())
+
     async for line in state.process.stdout:
         text = line.decode().strip()
         if not text:
@@ -142,21 +156,22 @@ async def tail_run(run_id: str) -> AsyncGenerator[dict[str, object], None]:
             state.events.append(event)
             yield event
         except json.JSONDecodeError:
-            logger.warning("Non-JSON line from Claude: %s", text[:100])
+            logger.warning("Claude non-JSON stdout [%s]: %s", run_id, text[:200])
+
+    await stderr_task  # ensure stderr is fully drained before reading exit code
 
     # Process finished
     return_code = await state.process.wait()
     state.finished_at = datetime.now().isoformat()
+    logger.info("Claude process [%s] exited with code %d", run_id, return_code)
 
     if return_code == 0:
         state.status = "done"
         yield {"type": "done", "run_id": run_id}
     else:
         state.status = "error"
-        stderr = ""
-        if state.process.stderr:
-            stderr = (await state.process.stderr.read()).decode()
-        yield {"type": "error", "message": f"Claude exited with code {return_code}: {stderr[:500]}"}
+        stderr_summary = " | ".join(stderr_lines[-10:]) if stderr_lines else "(no stderr)"
+        yield {"type": "error", "message": f"Claude exited with code {return_code}: {stderr_summary[:500]}"}
 
 
 def get_run_state(run_id: str) -> RunState | None:

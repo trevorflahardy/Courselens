@@ -114,7 +114,7 @@ export const api = {
     request<{ edges: number; orphans: number }>("/api/ingest/rebuild-graph", { method: "POST" }),
 
   getIngestStatus: () =>
-    request<{ status: string; stage?: string; nodes_processed?: number; last_run?: string }>("/api/ingest/status"),
+    request<{ status: string; stage?: string; message?: string; nodes_processed?: number; last_run?: string; feed?: string[] }>("/api/ingest/status"),
 
   cleanupTestData: () =>
     request<{

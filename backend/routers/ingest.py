@@ -19,8 +19,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/ingest", tags=["ingest"])
 
-# Simple status tracking — includes stage and last_run after a sync completes
-_ingest_status: dict[str, object] = {"status": "idle", "message": "No ingestion in progress"}
+# Simple status tracking — includes stage, feed, and last_run after a sync completes
+_ingest_status: dict[str, object] = {"status": "idle", "message": "No ingestion in progress", "feed": []}
 
 
 @router.post("/zip")
@@ -94,9 +94,42 @@ async def ingest_course() -> dict[str, str]:
         "status": "running",
         "stage": "fetching_modules",
         "message": "Canvas sync starting...",
+        "feed": [],
     }
     asyncio.create_task(_run_canvas_sync())
     return {"status": "started"}
+
+
+def _format_tool_feed(tool_name: str, tool_input: dict[str, object]) -> str | None:
+    """Turn a Claude tool-use call into a human-readable feed line."""
+    if "get_course_structure" in tool_name:
+        return "Fetching course structure..."
+    if "get_module" in tool_name:
+        return f"Fetching module: {tool_input.get('module_id', '')}"
+    if "list_modules" in tool_name:
+        return "Listing modules..."
+    if "list_module_items" in tool_name:
+        return f"Listing items in module {tool_input.get('module_id', '')}"
+    if "get_assignment_details" in tool_name:
+        aid = tool_input.get("assignment_id", tool_input.get("id", ""))
+        return f"Fetching assignment: {aid}"
+    if "get_page_content" in tool_name:
+        url = tool_input.get("page_url", tool_input.get("url", ""))
+        return f"Fetching page: {url}"
+    if "get_rubric_details" in tool_name:
+        return f"Fetching rubric: {tool_input.get('rubric_id', tool_input.get('id', ''))}"
+    if "download_course_file" in tool_name:
+        return f"Downloading file: {tool_input.get('file_id', '')}"
+    if "nodes_write" in tool_name:
+        node_id = tool_input.get("node_id", "")
+        title = tool_input.get("title", "")
+        label = title or node_id
+        return f"Saving node: {label}"
+    if "nodes_link" in tool_name:
+        return f"Linking {tool_input.get('source_id', '')} → {tool_input.get('target_id', '')}"
+    if "nodes_read" in tool_name:
+        return f"Reading node: {tool_input.get('node_id', '')}"
+    return None
 
 
 def _build_canvas_sync_prompt(course_id: str) -> str:
@@ -147,6 +180,8 @@ async def _run_canvas_sync() -> None:
     logger.info("Canvas sync starting: run_id=%s course_id=%s", run_id, course_id)
 
     try:
+        _ingest_status["feed"] = []  # reset feed for this run
+
         state = await start_audit_run(
             run_id=run_id,
             assignment_id="canvas-sync",
@@ -159,7 +194,7 @@ async def _run_canvas_sync() -> None:
             last_event = state.events[-1] if state.events else {}
             msg = last_event.get("message", "Failed to start Claude subprocess")
             logger.error("Canvas sync could not start subprocess: %s", msg)
-            _ingest_status = {"status": "error", "stage": "error", "message": str(msg)}
+            _ingest_status = {"status": "error", "stage": "error", "message": str(msg), "feed": []}
             return
 
         logger.debug("Claude subprocess started: pid=%s", state.process.pid if state.process else "N/A")
@@ -176,27 +211,43 @@ async def _run_canvas_sync() -> None:
         async for event in tail_run(run_id):
             event_count += 1
             event_type = event.get("type", "unknown")
-            logger.debug("Canvas sync event #%d: type=%s", event_count, event_type)
+            logger.debug("Canvas sync stream event #%d type=%s", event_count, event_type)
 
             if event_type == "error":
-                logger.error("Claude reported error during canvas sync: %s", event.get("message", ""))
+                logger.error("Canvas sync stream error: %s", event.get("message", ""))
 
             if event_type == "assistant":
-                msg = event.get("message")
-                content = msg.get("content", []) if isinstance(msg, dict) else []
+                msg_obj = event.get("message")
+                content = msg_obj.get("content", []) if isinstance(msg_obj, dict) else []
                 if isinstance(content, list):
                     for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            text = block.get("text", "").lower()
-                            logger.debug("Claude text snippet: %.120s", text)
+                        if not isinstance(block, dict):
+                            continue
+
+                        if block.get("type") == "tool_use":
+                            tool_name = block.get("name", "")
+                            tool_input = block.get("input") or {}
+                            tool_input_dict = tool_input if isinstance(tool_input, dict) else {}
+                            logger.debug("Canvas sync tool_use: %s input_keys=%s", tool_name, list(tool_input_dict.keys()))
+                            feed_line = _format_tool_feed(tool_name, tool_input_dict)
+                            if feed_line:
+                                logger.info("Canvas sync feed: %s", feed_line)
+                                feed = _ingest_status.get("feed")
+                                if isinstance(feed, list):
+                                    feed.append(feed_line)
+
+                        if block.get("type") == "text":
+                            text = block.get("text", "")
+                            logger.debug("Canvas sync text: %.200s", text)
+                            text_lower = text.lower()
                             for kw, stage in _KEYWORD_STAGES.items():
-                                if kw in text:
-                                    logger.info("Canvas sync stage transition → %s", stage)
-                                    _ingest_status = {
+                                if kw in text_lower:
+                                    logger.info("Canvas sync stage → %s", stage)
+                                    _ingest_status.update({
                                         "status": "running",
                                         "stage": stage,
                                         "message": f"Running: {stage.replace('_', ' ')}",
-                                    }
+                                    })
                                     break
 
         logger.info("Canvas sync tail_run exhausted after %d events", event_count)
@@ -208,12 +259,12 @@ async def _run_canvas_sync() -> None:
             len(run.events) if run else 0,
         )
         if run and run.status == "done":
-            _ingest_status = {
+            _ingest_status.update({
                 "status": "done",
                 "stage": "done",
                 "last_run": datetime.now().isoformat(),
                 "message": "Canvas sync complete",
-            }
+            })
         else:
             # Collect the last error event message for a more useful status
             error_msg = "Canvas sync failed — check backend logs"
@@ -223,18 +274,18 @@ async def _run_canvas_sync() -> None:
                         error_msg = str(ev["message"])
                         break
             logger.error("Canvas sync did not complete successfully: %s", error_msg)
-            _ingest_status = {
+            _ingest_status.update({
                 "status": "error",
                 "stage": "error",
                 "message": error_msg,
-            }
+            })
     except Exception as exc:
         logger.exception("Canvas sync background task raised an unhandled exception")
-        _ingest_status = {
+        _ingest_status.update({
             "status": "error",
             "stage": "error",
             "message": str(exc),
-        }
+        })
 
 
 @router.get("/status")
