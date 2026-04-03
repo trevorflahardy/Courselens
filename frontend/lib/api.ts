@@ -125,6 +125,22 @@ export const api = {
   clearAll: () =>
     request<Record<string, number>>("/api/ingest/clear-all", { method: "POST" }),
 
+  linkRubrics: () =>
+    request<{
+      linked: number;
+      already_linked: number;
+      missing_rubric_nodes: { assignment_id: string; rubric_id: string }[];
+    }>("/api/ingest/link-rubrics", { method: "POST" }),
+
+  fetchMissingRubrics: () =>
+    request<{ status: string; message?: string; rubrics_to_fetch?: number }>(
+      "/api/ingest/fetch-missing-rubrics",
+      { method: "POST" },
+    ),
+
+  getRubricFetchStatus: () =>
+    request<{ status: string; message?: string }>("/api/ingest/rubric-fetch-status"),
+
   cleanupTestData: () =>
     request<{
       nodes_deleted: number;

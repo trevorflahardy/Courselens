@@ -11,6 +11,7 @@ import {
   Loader2,
   AlertTriangle,
   Trash2,
+  Link2,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { CourseNodeSummary } from "@/lib/types";
@@ -177,6 +178,94 @@ function DedupButton({ onDone }: { onDone: () => Promise<void> }) {
             ? "No duplicates found"
             : `Removed ${result.nodes_deleted} duplicate${result.nodes_deleted !== 1 ? "s" : ""} across ${result.groups_merged} group${result.groups_merged !== 1 ? "s" : ""}`}
         </p>
+      )}
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Link Rubrics Button                                                       */
+/* -------------------------------------------------------------------------- */
+
+type LinkRubricsResult = {
+  linked: number;
+  already_linked: number;
+  missing_rubric_nodes: { assignment_id: string; rubric_id: string }[];
+};
+
+function LinkRubricsButton({ onDone }: { onDone: () => Promise<void> }) {
+  const [loading, setLoading] = useState(false);
+  const [fetchLoading, setFetchLoading] = useState(false);
+  const [result, setResult] = useState<LinkRubricsResult | null>(null);
+  const [fetchMsg, setFetchMsg] = useState<string | null>(null);
+
+  const handleLink = async () => {
+    setLoading(true);
+    setResult(null);
+    setFetchMsg(null);
+    try {
+      const r = await api.linkRubrics();
+      setResult(r);
+      await onDone();
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleFetchMissing = async () => {
+    setFetchLoading(true);
+    setFetchMsg(null);
+    try {
+      const r = await api.fetchMissingRubrics();
+      if (r.status === "nothing_to_do") {
+        setFetchMsg("No missing rubrics — all rubric nodes already exist.");
+      } else if (r.status === "started") {
+        setFetchMsg(`Fetching ${r.rubrics_to_fetch} rubric(s) in background… run Link Rubrics when done.`);
+      } else {
+        setFetchMsg(r.message ?? r.status);
+      }
+    } finally {
+      setFetchLoading(false);
+    }
+  };
+
+  const hasMissing = result && result.missing_rubric_nodes.length > 0;
+
+  return (
+    <div className="space-y-1">
+      <Button variant="outline" size="sm" className="w-full" onClick={handleLink} disabled={loading}>
+        {loading ? (
+          <><Loader2 className="size-3.5 mr-1.5 animate-spin" />Linking rubrics…</>
+        ) : (
+          <><Link2 className="size-3.5 mr-1.5" />Link Rubrics</>
+        )}
+      </Button>
+      {result && (
+        <p className="text-[11px] text-muted-foreground text-center">
+          {result.linked > 0
+            ? `Linked ${result.linked} pair${result.linked !== 1 ? "s" : ""}${hasMissing ? `, ${result.missing_rubric_nodes.length} node${result.missing_rubric_nodes.length !== 1 ? "s" : ""} missing` : ""}`
+            : hasMissing
+              ? `${result.missing_rubric_nodes.length} rubric node${result.missing_rubric_nodes.length !== 1 ? "s" : ""} missing`
+              : `All ${result.already_linked} link${result.already_linked !== 1 ? "s" : ""} already in place`}
+        </p>
+      )}
+      {hasMissing && (
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full text-amber-600 border-amber-400 hover:bg-amber-50"
+          onClick={handleFetchMissing}
+          disabled={fetchLoading}
+        >
+          {fetchLoading ? (
+            <><Loader2 className="size-3.5 mr-1.5 animate-spin" />Fetching…</>
+          ) : (
+            <><AlertTriangle className="size-3.5 mr-1.5" />Fetch {result.missing_rubric_nodes.length} Missing Rubric{result.missing_rubric_nodes.length !== 1 ? "s" : ""}</>
+          )}
+        </Button>
+      )}
+      {fetchMsg && (
+        <p className="text-[11px] text-muted-foreground text-center">{fetchMsg}</p>
       )}
     </div>
   );
@@ -1144,6 +1233,7 @@ export default function IngestPage() {
             </Button>
 
             <DedupButton onDone={async () => { await refreshNodeCounts(); await refreshAssignableData(); }} />
+            <LinkRubricsButton onDone={async () => { await refreshNodeCounts(); }} />
           </div>
         </GlassCard>
       </div>

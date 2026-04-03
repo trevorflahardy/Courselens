@@ -133,31 +133,61 @@ def _format_tool_feed(tool_name: str, tool_input: dict[str, object]) -> str | No
 
 
 def _build_canvas_sync_prompt(course_id: str) -> str:
-    return f"""You are ingesting Canvas course {course_id} into the audit database.
+    return f"""You are performing a COMPLETE, EXHAUSTIVE ingestion of Canvas course {course_id} into the audit database.
+Do NOT skip any module, item, or rubric. Process everything.
 
-Follow these steps in order:
+═══ PHASE 1: DISCOVER ALL CONTENT ═══
 
-1. Call mcp__canvas-api__get_course_structure with course_id="{course_id}" to get all modules and items.
+Step 1 — Get full course structure:
+  Call mcp__canvas-api__get_course_structure with course_id="{course_id}".
+  Write down every module name and every item within each module before proceeding.
+  Total up the item count so you know when you are done.
 
-2. For each module item, fetch full details:
-   - Assignments / Quizzes: call mcp__canvas-api__get_assignment_details
-   - Pages / WikiPages: call mcp__canvas-api__get_page_content
-   - Files: use the title and URL as-is
+Step 2 — Fetch full details for EVERY item (no skipping):
+  For each item in each module:
+  • Assignments / Quizzes → mcp__canvas-api__get_assignment_details
+      Record the returned `rubric_id` field (note it even if null).
+  • Pages / WikiPages → mcp__canvas-api__get_page_content
+  • Files → use title and canvas_url as-is, no extra fetch needed.
 
-3. Upsert each item using nodes_write:
-   - node_id: "assignment-{{canvas_id}}", "page-{{page_url_slug}}", "file-{{canvas_id}}", "quiz-{{canvas_id}}"
-   - source: "canvas_mcp"
-   - week: parse from the module name (e.g. "Week 5 - Design" → week=5), else null
-   - module: the full module name string
-   - canvas_url: the item HTML URL
-   - If re-syncing, nodes_write will upsert and overwrite existing data.
+Step 3 — Upsert every item via nodes_write immediately after fetching it:
+  node_id conventions:
+    assignment → "assignment-{{canvas_id}}"
+    page       → "page-{{url_slug}}"
+    file       → "file-{{canvas_id}}"
+    quiz       → "quiz-{{canvas_id}}"
+  For EVERY assignment node_write call you MUST include:
+    rubric_id = the Canvas rubric_id string if present (omit arg if null/missing)
+    week      = integer parsed from module name ("Week 5 — Design" → 5), omit if unparseable
+    module    = full module name string
+    canvas_url = the item's HTML URL
 
-4. For each assignment that has a rubric_id, call mcp__canvas-api__get_rubric_details, upsert a rubric node (type="rubric"), then call nodes_link to connect assignment → rubric.
+═══ PHASE 2: FETCH AND LINK ALL RUBRICS ═══
 
-Process ALL modules and ALL items — do not skip any.
+Step 4 — After ALL items are upserted, do a dedicated rubric pass:
+  For every assignment that had a non-null rubric_id (your list from Step 2):
+  a. Call mcp__canvas-api__get_rubric_details with course_id="{course_id}" and rubric_id=<id>
+  b. Upsert a rubric node:
+       nodes_write(node_id="rubric-<rubric_id>", node_type="rubric",
+                   title=<rubric title>, description=<comma-joined criterion names>,
+                   source="canvas_mcp")
+  c. Link it:
+       nodes_link(source_id="assignment-<canvas_id>", target_id="rubric-<rubric_id>",
+                  link_type="assignment")
+  Repeat for ALL assignments with rubrics — do not stop early.
 
-When finished, output exactly this JSON on its own line:
-{{"status":"done","modules":N,"assignments":N,"pages":N,"files":N,"rubrics":N}}"""
+═══ PHASE 3: VERIFY COMPLETENESS ═══
+
+Step 5 — Self-check before finishing:
+  Call nodes_list with node_type="assignment".
+  Count assignments total vs assignments where rubric_id is set.
+  If any assignment has rubric_id set but you did not create its rubric node and link, do it now.
+  Log a line: "Verification: X/Y assignments have rubrics linked."
+
+═══ COMPLETION ═══
+
+When ALL three phases are done, output exactly this JSON on its own line (replace N with real counts):
+{{"status":"done","modules":N,"assignments":N,"pages":N,"files":N,"rubrics_fetched":N,"rubrics_linked":N}}"""
 
 
 async def _run_canvas_sync() -> None:
@@ -372,6 +402,159 @@ async def dedup_files() -> dict[str, int]:
 
     await db.commit()
     return {"groups_merged": merged, "nodes_deleted": deleted}
+
+
+_rubric_fetch_status: dict[str, object] = {"status": "idle"}
+
+
+@router.post("/link-rubrics")
+async def link_rubrics() -> dict[str, object]:
+    """Pure-Python pass: create node_links for every assignment that has a rubric_id set
+    and whose rubric node already exists. Reports assignments whose rubric node is still missing."""
+    from backend.db import get_db
+
+    db = await get_db()
+
+    cursor = await db.execute(
+        "SELECT id, rubric_id FROM nodes WHERE type='assignment' AND rubric_id IS NOT NULL"
+    )
+    assignments = await cursor.fetchall()
+
+    linked = 0
+    already_linked = 0
+    missing: list[dict[str, str]] = []
+
+    for row in assignments:
+        aid: str = row["id"]
+        rid: str = row["rubric_id"]
+        rubric_node_id = f"rubric-{rid}"
+
+        c = await db.execute("SELECT 1 FROM nodes WHERE id = ?", (rubric_node_id,))
+        if await c.fetchone() is None:
+            missing.append({"assignment_id": aid, "rubric_id": rid})
+            continue
+
+        c = await db.execute(
+            "SELECT 1 FROM node_links WHERE source_id=? AND target_id=? AND link_type='assignment'",
+            (aid, rubric_node_id),
+        )
+        if await c.fetchone() is not None:
+            already_linked += 1
+            continue
+
+        await db.execute(
+            "INSERT INTO node_links (source_id, target_id, link_type) VALUES (?,?,'assignment')",
+            (aid, rubric_node_id),
+        )
+        linked += 1
+
+    await db.commit()
+    return {"linked": linked, "already_linked": already_linked, "missing_rubric_nodes": missing}
+
+
+def _build_fetch_rubrics_prompt(course_id: str, missing: list[dict[str, str]]) -> str:
+    lines = "\n".join(
+        f'  - assignment_id="{m["assignment_id"]}"  rubric_id="{m["rubric_id"]}"'
+        for m in missing
+    )
+    count = len(missing)
+    return f"""You are fetching {count} missing rubric(s) for Canvas course {course_id}.
+
+The following assignments exist in the audit database but their rubric nodes have not been created yet.
+Fetch and upsert EVERY rubric in this list — do not skip any:
+
+{lines}
+
+For each entry above:
+1. Call mcp__canvas-api__get_rubric_details with course_id="{course_id}" and rubric_id=<rubric_id>
+2. Upsert the rubric node:
+     nodes_write(node_id="rubric-<rubric_id>", node_type="rubric",
+                 title=<rubric title from Canvas>,
+                 description=<comma-joined criterion descriptions>,
+                 source="canvas_mcp")
+3. Link it to the assignment:
+     nodes_link(source_id=<assignment_id>, target_id="rubric-<rubric_id>", link_type="assignment")
+
+Process all {count} rubrics. When done, output exactly this JSON on its own line:
+{{"status":"done","rubrics_fetched":{count}}}"""
+
+
+async def _run_fetch_missing_rubrics(missing: list[dict[str, str]]) -> None:
+    global _rubric_fetch_status
+    from backend.claude_runner import get_run_state, start_audit_run, tail_run
+    from backend.config import settings
+
+    course_id = settings.canvas_course_id
+    if not course_id:
+        _rubric_fetch_status = {"status": "error", "message": "canvas_course_id not set in .env"}
+        return
+
+    run_id = f"fetch-rubrics-{uuid.uuid4().hex[:8]}"
+    logger.info("Fetch-rubrics starting: run_id=%s missing=%d", run_id, len(missing))
+
+    try:
+        state = await start_audit_run(
+            run_id=run_id,
+            assignment_id="fetch-rubrics",
+            prompt=_build_fetch_rubrics_prompt(course_id, missing),
+            allowed_tools=None,
+        )
+        if state.status == "error":
+            msg = state.events[-1].get("message", "Failed to start subprocess") if state.events else "Failed"
+            _rubric_fetch_status = {"status": "error", "message": str(msg)}
+            return
+
+        async for _ in tail_run(run_id):
+            pass
+
+        run = get_run_state(run_id)
+        if run and run.status == "done":
+            _rubric_fetch_status = {
+                "status": "done",
+                "message": f"Fetched {len(missing)} rubric(s). Run Link Rubrics to create the links.",
+            }
+        else:
+            _rubric_fetch_status = {"status": "error", "message": "Fetch rubrics run did not complete"}
+    except Exception as exc:
+        logger.exception("fetch-rubrics background task failed")
+        _rubric_fetch_status = {"status": "error", "message": str(exc)}
+
+
+@router.post("/fetch-missing-rubrics")
+async def fetch_missing_rubrics() -> dict[str, object]:
+    """Spawn a targeted Claude run to fetch rubric nodes that are referenced by assignments
+    but do not yet exist in the database. Run link-rubrics afterward to create the links."""
+    global _rubric_fetch_status
+    from backend.db import get_db
+
+    if _rubric_fetch_status.get("status") == "running":
+        return {"status": "already_running"}
+
+    db = await get_db()
+    cursor = await db.execute(
+        """SELECT n.id as assignment_id, n.rubric_id
+           FROM nodes n
+           WHERE n.type = 'assignment'
+             AND n.rubric_id IS NOT NULL
+             AND NOT EXISTS (
+               SELECT 1 FROM nodes r WHERE r.id = 'rubric-' || n.rubric_id
+             )"""
+    )
+    rows = await cursor.fetchall()
+    missing = [{"assignment_id": row["assignment_id"], "rubric_id": row["rubric_id"]} for row in rows]
+
+    if not missing:
+        return {"status": "nothing_to_do", "message": "All rubric nodes already exist."}
+
+    _rubric_fetch_status = {"status": "running", "message": f"Fetching {len(missing)} missing rubric(s)…"}
+    asyncio.create_task(_run_fetch_missing_rubrics(missing))
+    return {"status": "started", "rubrics_to_fetch": len(missing)}
+
+
+@router.get("/rubric-fetch-status")
+async def rubric_fetch_status() -> dict[str, object]:
+    """Poll the status of the fetch-missing-rubrics background run."""
+    return _rubric_fetch_status
 
 
 @router.post("/clear-all")
