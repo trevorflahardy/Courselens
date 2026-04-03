@@ -504,7 +504,7 @@ export default function IngestPage() {
         <div className="text-right text-[12px] text-muted-foreground">
           <span className="opacity-60">Last sync</span>
           <br />
-          <span className="font-medium text-foreground/70">{formatTime(lastRun)}</span>
+          <span className="font-medium text-foreground/70" suppressHydrationWarning>{formatTime(lastRun)}</span>
         </div>
       </div>
 
@@ -912,7 +912,7 @@ export default function IngestPage() {
                   <span className="truncate flex-1">{entry.title}</span>
 
                   {/* Timestamp */}
-                  <span className="text-muted-foreground shrink-0">
+                  <span className="text-muted-foreground shrink-0" suppressHydrationWarning>
                     {formatTime(entry.timestamp)}
                   </span>
                 </div>
@@ -956,7 +956,7 @@ export default function IngestPage() {
               </div>
               <div className="flex justify-between text-[12px]">
                 <span className="text-muted-foreground">Last ingestion</span>
-                <span className="font-medium">{formatTime(lastRun)}</span>
+                <span className="font-medium" suppressHydrationWarning>{formatTime(lastRun)}</span>
               </div>
             </div>
 

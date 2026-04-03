@@ -57,6 +57,7 @@ async def start_audit_run(
         prompt,
         "--output-format",
         "stream-json",
+        "--verbose",
     ]
 
     if allowed_tools:
