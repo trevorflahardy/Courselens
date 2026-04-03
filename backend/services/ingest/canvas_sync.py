@@ -114,6 +114,7 @@ async def run_full_sync(
         week, mod_name, mod_order = assignment_module_map.get(a.id, (None, "", 0))
         rubric_settings = d.get("rubric_settings") or {}
         rubric_id = str(rubric_settings["id"]) if rubric_settings.get("id") else None
+        rubric_ref = f"rubric-{rubric_id}" if rubric_id else None
         description = d.get("description") or None
 
         data: dict[str, object] = {
@@ -125,7 +126,7 @@ async def run_full_sync(
             "module_order": mod_order,
             "points_possible": d.get("points_possible"),
             "submission_types": _normalize_submission_types(d.get("submission_types")),
-            "rubric_id": rubric_id,
+            "rubric_id": rubric_ref,
             "canvas_url": d.get("html_url"),
             "source": "canvas_api",
         }
@@ -204,28 +205,21 @@ async def run_full_sync(
             pts = rd.get("points_possible")
             criteria = rd.get("data") or []
 
-            desc_parts = [f"{c['description']} ({c['points']}pts)" for c in criteria]
-            description = " | ".join(desc_parts)
-
             criteria_json = json.dumps([{
                 "id": c.get("id"),
                 "description": c.get("description", ""),
                 "long_description": html.unescape(c.get("long_description") or ""),
                 "points": c.get("points"),
                 "ratings": [
-                    {"description": r.get("description"), "points": r.get("points")}
+                    {
+                        "id": r.get("id"),
+                        "label": r.get("description") or "",
+                        "description": r.get("description"),
+                        "points": r.get("points"),
+                    }
                     for r in c.get("ratings", [])
                 ],
             } for c in criteria])
-
-            # Upsert rubric node
-            await _upsert_node(db, rubric_node_id, {
-                "type": "rubric",
-                "title": title,
-                "description": description,
-                "points_possible": pts,
-                "source": "canvas_api",
-            }, now)
 
             # Upsert rubrics table (structured criteria for audit engine)
             cursor = await db.execute("SELECT 1 FROM rubrics WHERE id=?", (rubric_node_id,))
@@ -243,27 +237,16 @@ async def run_full_sync(
 
             result.rubrics_fetched += 1
 
-            # Create node_links for ALL assignments pointing to this rubric
-            cursor = await db.execute(
-                "SELECT id FROM nodes WHERE rubric_id=? AND type='assignment'", (rubric_id,)
-            )
-            rows = await cursor.fetchall()
-            for row in rows:
-                aid = row["id"]
-                c2 = await db.execute(
-                    "SELECT 1 FROM node_links WHERE source_id=? AND target_id=? AND link_type='assignment'",
-                    (aid, rubric_node_id),
-                )
-                if await c2.fetchone() is None:
-                    await db.execute(
-                        "INSERT INTO node_links (source_id, target_id, link_type) VALUES (?,?,'assignment')",
-                        (aid, rubric_node_id),
-                    )
-                    result.rubrics_linked += 1
-
         except Exception as exc:
             logger.warning("Failed to fetch rubric %s: %s", rubric_id, exc)
             result.errors.append(f"rubric-{rubric_id}: {exc}")
+
+    # Remove legacy rubric nodes and links so rubrics are represented only via assignments.
+    await db.execute(
+        "DELETE FROM node_links WHERE source_id IN (SELECT id FROM nodes WHERE type='rubric') "
+        "OR target_id IN (SELECT id FROM nodes WHERE type='rubric')"
+    )
+    await db.execute("DELETE FROM nodes WHERE type='rubric'")
 
     await db.commit()
     await emit(

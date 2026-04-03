@@ -242,8 +242,11 @@ async def dedup_files() -> dict[str, int]:
 
 @router.post("/link-rubrics")
 async def link_rubrics() -> dict[str, object]:
-    """Pure-Python pass: create node_links for every assignment that has a rubric_id set
-    and whose rubric node already exists. Reports assignments whose rubric node is still missing."""
+    """Normalize assignment rubric references and validate rubric table rows.
+
+    Rubrics are represented through assignment.rubric_id + the rubrics table,
+    not as standalone graph nodes.
+    """
     from backend.db import get_db
 
     db = await get_db()
@@ -260,26 +263,27 @@ async def link_rubrics() -> dict[str, object]:
     for row in assignments:
         aid: str = row["id"]
         rid: str = row["rubric_id"]
-        rubric_node_id = f"rubric-{rid}"
+        rubric_ref = rid if rid.startswith("rubric-") else f"rubric-{rid}"
+        canvas_id = rubric_ref[7:]
 
-        c = await db.execute("SELECT 1 FROM nodes WHERE id = ?", (rubric_node_id,))
-        if await c.fetchone() is None:
-            missing.append({"assignment_id": aid, "rubric_id": rid})
-            continue
+        if rubric_ref != rid:
+            await db.execute("UPDATE nodes SET rubric_id=? WHERE id=?", (rubric_ref, aid))
+            linked += 1
+        else:
+            already_linked += 1
 
         c = await db.execute(
-            "SELECT 1 FROM node_links WHERE source_id=? AND target_id=? AND link_type='assignment'",
-            (aid, rubric_node_id),
+            "SELECT 1 FROM rubrics WHERE id = ? OR canvas_id = ?",
+            (rubric_ref, canvas_id),
         )
-        if await c.fetchone() is not None:
-            already_linked += 1
-            continue
+        if await c.fetchone() is None:
+            missing.append({"assignment_id": aid, "rubric_id": rubric_ref})
 
-        await db.execute(
-            "INSERT INTO node_links (source_id, target_id, link_type) VALUES (?,?,'assignment')",
-            (aid, rubric_node_id),
-        )
-        linked += 1
+    await db.execute(
+        "DELETE FROM node_links WHERE source_id IN (SELECT id FROM nodes WHERE type='rubric') "
+        "OR target_id IN (SELECT id FROM nodes WHERE type='rubric')"
+    )
+    await db.execute("DELETE FROM nodes WHERE type='rubric'")
 
     await db.commit()
     return {"linked": linked, "already_linked": already_linked, "missing_rubric_nodes": missing}
@@ -293,8 +297,8 @@ async def sync_rubrics() -> dict[str, object]:
     1. Fetches all assignments from Canvas to get authoritative rubric_id values.
     2. Updates nodes.rubric_id for every assignment.
     3. Fetches full rubric details (criteria, ratings) for every rubric_id found.
-    4. Upserts rubric nodes with rich description and populates the rubrics table.
-    5. Creates node_links for assignment → rubric pairs.
+    4. Populates the rubrics table (structured criteria + ratings).
+    5. Removes legacy rubric nodes so rubrics are represented via assignments only.
 
     No Claude subprocess needed — deterministic and always correct.
     """
@@ -335,6 +339,7 @@ async def sync_rubrics() -> dict[str, object]:
     for a in assignments_data:
         assignment_id = f"assignment-{a['id']}"
         rubric_id = str(a["rubric_settings"]["id"]) if a.get("rubric_settings") else None
+        rubric_ref = f"rubric-{rubric_id}" if rubric_id else None
 
         # Check node exists in DB
         cursor = await db.execute("SELECT 1 FROM nodes WHERE id=?", (assignment_id,))
@@ -344,7 +349,7 @@ async def sync_rubrics() -> dict[str, object]:
         # Update rubric_id on assignment node
         await db.execute(
             "UPDATE nodes SET rubric_id=?, updated_at=? WHERE id=?",
-            (rubric_id, now, assignment_id),
+            (rubric_ref, now, assignment_id),
         )
         assignment_updates += 1
 
@@ -371,33 +376,21 @@ async def sync_rubrics() -> dict[str, object]:
             pts = rdata.get("points_possible")
             criteria = rdata.get("data") or []
 
-            desc_parts = [f"{c['description']} ({c['points']}pts)" for c in criteria]
-            description = " | ".join(desc_parts)
-
             criteria_json = _json.dumps([{
                 "id": c.get("id"),
                 "description": c.get("description", ""),
                 "long_description": _html.unescape(c.get("long_description") or ""),
                 "points": c.get("points"),
                 "ratings": [
-                    {"description": r.get("description"), "points": r.get("points")}
+                    {
+                        "id": r.get("id"),
+                        "label": r.get("description") or "",
+                        "description": r.get("description"),
+                        "points": r.get("points"),
+                    }
                     for r in c.get("ratings", [])
                 ],
             } for c in criteria])
-
-            # Upsert rubric node
-            cursor = await db.execute("SELECT 1 FROM nodes WHERE id=?", (rubric_node_id,))
-            if await cursor.fetchone():
-                await db.execute(
-                    "UPDATE nodes SET title=?, description=?, points_possible=?, updated_at=? WHERE id=?",
-                    (title, description, pts, now, rubric_node_id),
-                )
-            else:
-                await db.execute(
-                    "INSERT INTO nodes (id, type, title, description, points_possible, source, updated_at, created_at) "
-                    "VALUES (?,?,?,?,?,?,?,?)",
-                    (rubric_node_id, "rubric", title, description, pts, "canvas_api", now, now),
-                )
             rubric_nodes_upserted += 1
 
             # Upsert rubrics table (structured criteria)
@@ -414,27 +407,15 @@ async def sync_rubrics() -> dict[str, object]:
                     (rubric_node_id, rubric_id, title, pts, criteria_json, primary_assignment_id, now, now),
                 )
 
-            # Create node_links for ALL assignments that reference this rubric
-            cursor = await db.execute(
-                "SELECT id FROM nodes WHERE rubric_id=? AND type='assignment'", (rubric_id,)
-            )
-            all_assignments = await cursor.fetchall()
-            for row in all_assignments:
-                aid = row["id"]
-                c2 = await db.execute(
-                    "SELECT 1 FROM node_links WHERE source_id=? AND target_id=? AND link_type='assignment'",
-                    (aid, rubric_node_id),
-                )
-                if await c2.fetchone() is None:
-                    await db.execute(
-                        "INSERT INTO node_links (source_id, target_id, link_type) VALUES (?,?,'assignment')",
-                        (aid, rubric_node_id),
-                    )
-                    links_created += 1
-
         except Exception as exc:
             errors.append(f"rubric-{rubric_id}: {exc}")
             logger.warning("sync-rubrics error for rubric %s: %s", rubric_id, exc)
+
+    await db.execute(
+        "DELETE FROM node_links WHERE source_id IN (SELECT id FROM nodes WHERE type='rubric') "
+        "OR target_id IN (SELECT id FROM nodes WHERE type='rubric')"
+    )
+    await db.execute("DELETE FROM nodes WHERE type='rubric'")
 
     await db.commit()
 
@@ -453,14 +434,17 @@ async def clear_all() -> dict[str, int]:
 
     db = await get_db()
 
-    await db.execute("PRAGMA foreign_keys=OFF")
     counts: dict[str, int] = {}
-    for table in ("findings", "audit_runs", "edges", "node_links", "files", "rubrics", "nodes", "ingest_log"):
-        cursor = await db.execute(f"DELETE FROM {table}")  # noqa: S608
-        counts[f"{table}_deleted"] = cursor.rowcount
-    await db.commit()
-    await db.execute("PRAGMA foreign_keys=ON")
-    return counts
+    try:
+        await db.execute("PRAGMA foreign_keys=OFF")
+        # Delete in FK-safe order. ingest_log references nodes(node_id), so it must be cleared first.
+        for table in ("findings", "audit_runs", "edges", "node_links", "files", "rubrics", "ingest_log", "nodes"):
+            cursor = await db.execute(f"DELETE FROM {table}")  # noqa: S608
+            counts[f"{table}_deleted"] = cursor.rowcount
+        await db.commit()
+        return counts
+    finally:
+        await db.execute("PRAGMA foreign_keys=ON")
 
 
 @router.post("/cleanup-test-data")

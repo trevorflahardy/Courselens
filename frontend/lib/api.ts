@@ -30,6 +30,7 @@ import type {
   GraphState,
   AuditRun,
   DashboardStats,
+  Rubric,
 } from "./types";
 
 export const api = {
@@ -44,6 +45,8 @@ export const api = {
   },
 
   getNode: (id: string) => request<CourseNode>(`/api/nodes/${id}`),
+
+  getAssignmentRubric: (id: string) => request<Rubric>(`/api/nodes/${id}/rubric`),
 
   getNodeLinks: (id: string) => request<NodeLink[]>(`/api/nodes/${id}/links`),
 

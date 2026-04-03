@@ -33,6 +33,38 @@ class NodeLinkCreate(BaseModel):
     link_type: str
 
 
+class RubricRatingResponse(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    id: str
+    label: str
+    points: float
+    description: str | None = None
+
+
+class RubricCriterionResponse(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    id: str
+    description: str
+    points: float
+    ratings: list[RubricRatingResponse]
+
+
+class AssignmentRubricResponse(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    id: str
+    canvas_id: str | None = None
+    title: str
+    points_possible: float | None = None
+    criteria: list[RubricCriterionResponse]
+    assignment_id: str | None = None
+    content_hash: str | None = None
+    created_at: str
+    updated_at: str
+
+
 @router.get("")
 async def list_nodes(
     type: NodeType | None = None,
@@ -62,6 +94,21 @@ async def get_node(node_id: str) -> CourseNode:
     if node is None:
         raise HTTPException(status_code=404, detail=f"Node '{node_id}' not found")
     return node
+
+
+@router.get("/{node_id}/rubric")
+async def get_assignment_rubric(node_id: str) -> AssignmentRubricResponse:
+    node = await node_service.get_node(node_id)
+    if node is None:
+        raise HTTPException(status_code=404, detail=f"Node '{node_id}' not found")
+    if node.type != NodeType.ASSIGNMENT:
+        raise HTTPException(status_code=400, detail="Rubrics can only be requested for assignments")
+
+    rubric = await node_service.get_assignment_rubric(node_id)
+    if rubric is None:
+        raise HTTPException(status_code=404, detail=f"No rubric found for assignment '{node_id}'")
+
+    return AssignmentRubricResponse.model_validate(rubric, strict=False)
 
 
 @router.patch("/{node_id}")

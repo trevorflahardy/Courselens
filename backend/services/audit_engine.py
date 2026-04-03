@@ -238,9 +238,12 @@ async def _get_rubric_text(node_id: str) -> str | None:
     if not row or not row[0]:
         return None
 
+    rubric_ref = str(row[0])
+    canvas_id_guess = rubric_ref[7:] if rubric_ref.startswith("rubric-") else rubric_ref
+
     cursor = await db.execute(
-        "SELECT title, points_possible, criteria_json FROM rubrics WHERE id = ?",
-        (row[0],),
+        "SELECT title, points_possible, criteria_json FROM rubrics WHERE id = ? OR canvas_id = ? LIMIT 1",
+        (rubric_ref, canvas_id_guess),
     )
     rubric = await cursor.fetchone()
     if not rubric:

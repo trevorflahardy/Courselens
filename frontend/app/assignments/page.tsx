@@ -45,7 +45,6 @@ const TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: "all", label: "All Types" },
   { value: "assignment", label: "Assignment" },
   { value: "page", label: "Page" },
-  { value: "rubric", label: "Rubric" },
   { value: "lecture", label: "Lecture" },
   { value: "announcement", label: "Announcement" },
   { value: "file", label: "File" },
@@ -163,7 +162,7 @@ export default function AssignmentsPage() {
     setLoading(true);
     Promise.all([api.listNodes(), api.listAllNodeLinks()])
       .then(([data, links]) => {
-        if (!cancelled) setNodes(data);
+        if (!cancelled) setNodes(data.filter((node) => node.type !== "rubric"));
         if (!cancelled) setNodeLinks(links);
       })
       .catch((e) => {

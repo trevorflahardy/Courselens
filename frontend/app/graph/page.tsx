@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { ForceGraph, NODE_COLORS } from "@/components/graph/ForceGraph";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
-import type { CourseNodeSummary, GraphEdge } from "@/lib/types";
+import type { CourseNode, CourseNodeSummary, GraphEdge } from "@/lib/types";
 
 type FilterMode = "all" | "connected" | "gaps" | "orphans" | "inferred";
 
@@ -17,6 +17,21 @@ const FILTER_OPTIONS: { value: FilterMode; label: string; description: string }[
   { value: "inferred", label: "Inferred Edges", description: "AI-derived links" },
 ];
 
+function sanitizeHtml(html: string): string {
+  return html
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, "")
+    .replace(/\son\w+\s*=\s*["'][^"']*["']/gi, "")
+    .replace(/\son\w+\s*=\s*\S+/gi, "");
+}
+
+function isPdfPath(value: string | null | undefined): boolean {
+  return Boolean(value && /\.pdf($|\?)/i.test(value));
+}
+
+function isImagePath(value: string | null | undefined): boolean {
+  return Boolean(value && /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)($|\?)/i.test(value));
+}
+
 export default function GraphPage() {
   const router = useRouter();
   const [nodes, setNodes] = useState<CourseNodeSummary[]>([]);
@@ -24,6 +39,8 @@ export default function GraphPage() {
   const [filter, setFilter] = useState<FilterMode>("all");
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<CourseNodeSummary | null>(null);
+  const [selectedNodeDetail, setSelectedNodeDetail] = useState<CourseNode | null>(null);
+  const [selectedNodeDetailLoading, setSelectedNodeDetailLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -53,6 +70,39 @@ export default function GraphPage() {
       setSelectedNode(null);
     }
   }, [selectedNodeId, nodes]);
+
+  useEffect(() => {
+    if (!selectedNodeId) {
+      setSelectedNodeDetail(null);
+      setSelectedNodeDetailLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setSelectedNodeDetailLoading(true);
+
+    api
+      .getNode(selectedNodeId)
+      .then((node) => {
+        if (!cancelled) {
+          setSelectedNodeDetail(node);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSelectedNodeDetail(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setSelectedNodeDetailLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedNodeId]);
 
   const handleNodeClick = useCallback((nodeId: string) => {
     setSelectedNodeId((prev) => (prev === nodeId ? null : nodeId));
@@ -226,8 +276,75 @@ export default function GraphPage() {
                   onClick={() => router.push(`/assignments/${selectedNode.id}`)}
                   className="w-full rounded-lg px-3 py-2 text-xs font-medium bg-primary/15 text-primary hover:bg-primary/25 transition-colors"
                 >
-                  View Assignment Details
+                  View Node Details
                 </button>
+
+                {selectedNodeDetailLoading && (
+                  <p className="mt-2 text-[11px] text-muted-foreground/50">Loading description...</p>
+                )}
+
+                {!selectedNodeDetailLoading && selectedNodeDetail?.description && (
+                  <div className="mt-3 pt-3 border-t border-white/[0.06]">
+                    <p className="text-[10px] text-muted-foreground/50 uppercase tracking-wider">
+                      Description
+                    </p>
+                    <div
+                      className="mt-1 text-xs text-muted-foreground max-h-44 overflow-y-auto space-y-2 [&_p]:leading-relaxed [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:list-decimal [&_ol]:pl-4 [&_a]:text-primary [&_a]:underline"
+                      dangerouslySetInnerHTML={{
+                        __html: sanitizeHtml(selectedNodeDetail.description),
+                      }}
+                    />
+                  </div>
+                )}
+
+                {!selectedNodeDetailLoading && selectedNodeDetail?.type === "file" && (
+                  <div className="mt-3 pt-3 border-t border-white/[0.06] space-y-2">
+                    <p className="text-[10px] text-muted-foreground/50 uppercase tracking-wider">
+                      File Preview
+                    </p>
+
+                    {selectedNodeDetail.canvas_url && isPdfPath(selectedNodeDetail.canvas_url) && (
+                      <iframe
+                        src={selectedNodeDetail.canvas_url}
+                        title={`${selectedNodeDetail.title} PDF preview`}
+                        className="w-full h-56 rounded-md border border-white/[0.08] bg-black/30"
+                      />
+                    )}
+
+                    {selectedNodeDetail.canvas_url && isImagePath(selectedNodeDetail.canvas_url) && (
+                      <img
+                        src={selectedNodeDetail.canvas_url}
+                        alt={selectedNodeDetail.title}
+                        className="w-full max-h-64 object-contain rounded-md border border-white/[0.08] bg-black/30"
+                        loading="lazy"
+                      />
+                    )}
+
+                    {selectedNodeDetail.file_content && (
+                      <pre className="max-h-44 overflow-y-auto rounded-md border border-white/[0.08] bg-black/30 p-2 text-[11px] text-muted-foreground whitespace-pre-wrap break-words">
+                        {selectedNodeDetail.file_content}
+                      </pre>
+                    )}
+
+                    {!selectedNodeDetail.file_content
+                      && selectedNodeDetail.canvas_url
+                      && !isPdfPath(selectedNodeDetail.canvas_url)
+                      && !isImagePath(selectedNodeDetail.canvas_url) && (
+                        <a
+                          href={selectedNodeDetail.canvas_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-block text-xs text-primary hover:underline"
+                        >
+                          Open file
+                        </a>
+                    )}
+
+                    {!selectedNodeDetail.file_content && !selectedNodeDetail.canvas_url && (
+                      <p className="text-[11px] text-muted-foreground/50">No file preview available.</p>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           </div>

@@ -42,6 +42,95 @@ async def get_node(node_id: str) -> CourseNode | None:
     return _row_to_node(dict(row))
 
 
+async def get_assignment_rubric(node_id: str) -> dict[str, object] | None:
+    """Return rubric payload for an assignment node, if available."""
+    db = await get_db()
+
+    cursor = await db.execute(
+        "SELECT rubric_id FROM nodes WHERE id = ? AND type = 'assignment'",
+        (node_id,),
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return None
+
+    rubric_ref = row["rubric_id"]
+    if not rubric_ref:
+        return None
+
+    canvas_id_guess = rubric_ref[7:] if rubric_ref.startswith("rubric-") else rubric_ref
+    cursor = await db.execute(
+        "SELECT id, canvas_id, title, points_possible, criteria_json, assignment_id, content_hash, "
+        "created_at, updated_at "
+        "FROM rubrics WHERE id = ? OR canvas_id = ? LIMIT 1",
+        (rubric_ref, canvas_id_guess),
+    )
+    rubric_row = await cursor.fetchone()
+    if rubric_row is None:
+        return None
+
+    criteria_data: list[dict[str, object]] = []
+    raw_criteria = rubric_row["criteria_json"]
+    try:
+        parsed = json.loads(raw_criteria) if raw_criteria else []
+    except json.JSONDecodeError:
+        parsed = []
+
+    if isinstance(parsed, list):
+        for idx, criterion in enumerate(parsed, start=1):
+            if not isinstance(criterion, dict):
+                continue
+            criterion_id = str(criterion.get("id") or f"criterion-{idx}")
+            description = str(
+                criterion.get("long_description")
+                or criterion.get("description")
+                or ""
+            )
+            points = float(criterion.get("points") or 0)
+
+            ratings_out: list[dict[str, object]] = []
+            ratings = criterion.get("ratings")
+            if isinstance(ratings, list):
+                for r_idx, rating in enumerate(ratings, start=1):
+                    if not isinstance(rating, dict):
+                        continue
+                    rating_id = str(rating.get("id") or f"{criterion_id}-rating-{r_idx}")
+                    rating_description = rating.get("description")
+                    ratings_out.append(
+                        {
+                            "id": rating_id,
+                            "label": str(
+                                rating.get("label")
+                                or rating_description
+                                or f"Rating {r_idx}"
+                            ),
+                            "points": float(rating.get("points") or 0),
+                            "description": str(rating_description) if rating_description else None,
+                        }
+                    )
+
+            criteria_data.append(
+                {
+                    "id": criterion_id,
+                    "description": description,
+                    "points": points,
+                    "ratings": ratings_out,
+                }
+            )
+
+    return {
+        "id": rubric_row["id"],
+        "canvas_id": rubric_row["canvas_id"],
+        "title": rubric_row["title"],
+        "points_possible": rubric_row["points_possible"],
+        "criteria": criteria_data,
+        "assignment_id": node_id,
+        "content_hash": rubric_row["content_hash"],
+        "created_at": rubric_row["created_at"],
+        "updated_at": rubric_row["updated_at"],
+    }
+
+
 async def list_nodes(
     node_type: str | None = None,
     week: int | None = None,

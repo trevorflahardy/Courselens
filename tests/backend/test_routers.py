@@ -77,6 +77,23 @@ async def test_get_node_with_rubric_id(client: AsyncClient) -> None:
     assert node["rubric_id"] == "rubric-peer-review"
 
 
+async def test_get_assignment_rubric(client: AsyncClient) -> None:
+    r = await client.get("/api/nodes/assign-09/rubric")
+    assert r.status_code == 200
+    rubric = r.json()
+    assert rubric["id"] == "rubric-peer-review"
+    assert rubric["title"] == "Peer Review Rubric"
+    assert isinstance(rubric["criteria"], list)
+    assert len(rubric["criteria"]) > 0
+    first_rating = rubric["criteria"][0]["ratings"][0]
+    assert "label" in first_rating
+
+
+async def test_get_assignment_rubric_not_found(client: AsyncClient) -> None:
+    r = await client.get("/api/nodes/assign-01/rubric")
+    assert r.status_code == 404
+
+
 async def test_get_node_404(client: AsyncClient) -> None:
     r = await client.get("/api/nodes/nonexistent")
     assert r.status_code == 404
@@ -270,3 +287,11 @@ async def test_ingest_status(client: AsyncClient) -> None:
     r = await client.get("/api/ingest/status")
     assert r.status_code == 200
     assert r.json()["status"] in ("idle", "done", "running", "error")
+
+
+async def test_clear_all(client: AsyncClient) -> None:
+    r = await client.post("/api/ingest/clear-all")
+    assert r.status_code == 200
+    payload = r.json()
+    assert "nodes_deleted" in payload
+    assert "ingest_log_deleted" in payload

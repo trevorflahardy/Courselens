@@ -182,19 +182,22 @@ export default function AssignmentDetailPage() {
             setSelectedAssignmentLinks([]);
           });
 
-        // Fetch rubric if node has one
+        // Rubrics are exposed through assignments, not as standalone nodes.
         if (nodeData.rubric_id) {
           api
-            .getNode(nodeData.rubric_id)
-            .then((rubricNode) => {
-              // The rubric data may be embedded or separate — handle gracefully
+            .getAssignmentRubric(nodeData.id)
+            .then((rubricData) => {
               if (!cancelled) {
-                setRubric(rubricNode as unknown as Rubric);
+                setRubric(rubricData);
               }
             })
             .catch(() => {
-              /* rubric fetch is optional */
+              if (!cancelled) {
+                setRubric(null);
+              }
             });
+        } else {
+          setRubric(null);
         }
       })
       .catch((e) => {
