@@ -182,7 +182,7 @@ interface DisplayNode {
   node: CourseNodeSummary;
   moduleLabel: string | null;
   isLinkedReference: boolean;
-  linkedViaAssignment: string | null;
+  linkedViaSource: string | null;
 }
 
 interface GroupedNodes {
@@ -275,22 +275,79 @@ export default function AssignmentsPage() {
         .map((node) => [node.id, node]),
     );
 
+    // Determine whether an unassigned node has exactly one source module context.
+    // If so, render it directly in that module/week bucket (not as a linked copy).
+    const sourceContextsByTargetId = new Map<string, Set<string>>();
+    const sourceContextMeta = new Map<string, { week: number | null; module: string | null; sourceTitle: string | null }>();
+    for (const link of nodeLinks) {
+      if (!(link.link_type === "file" || link.link_type === "assignment")) {
+        continue;
+      }
+      const target = primaryById.get(link.target_id);
+      const sourceNode = sourceById.get(link.source_id);
+      if (!target || !sourceNode) {
+        continue;
+      }
+
+      const contextKey = bucketKey(sourceNode.week, sourceNode.module);
+      if (!sourceContextsByTargetId.has(target.id)) {
+        sourceContextsByTargetId.set(target.id, new Set<string>());
+      }
+      sourceContextsByTargetId.get(target.id)!.add(contextKey);
+      if (!sourceContextMeta.has(`${target.id}::${contextKey}`)) {
+        sourceContextMeta.set(`${target.id}::${contextKey}`, {
+          week: sourceNode.week,
+          module: sourceNode.module,
+          sourceTitle: sourceNode.title,
+        });
+      }
+    }
+
+    const adoptedPlacementByNodeId = new Map<string, { week: number | null; module: string | null; sourceTitle: string | null }>();
+    for (const node of filtered) {
+      const hasNativePlacement = node.week !== null || Boolean(node.module);
+      if (hasNativePlacement) {
+        continue;
+      }
+
+      const contexts = sourceContextsByTargetId.get(node.id);
+      if (!contexts || contexts.size !== 1) {
+        continue;
+      }
+
+      const onlyContext = [...contexts][0];
+      const contextMeta = sourceContextMeta.get(`${node.id}::${onlyContext}`);
+      if (!contextMeta) {
+        continue;
+      }
+
+      const hasMeaningfulContext = contextMeta.week !== null || Boolean(contextMeta.module);
+      if (!hasMeaningfulContext) {
+        continue;
+      }
+
+      adoptedPlacementByNodeId.set(node.id, contextMeta);
+    }
+
     for (const n of filtered) {
-      const key = bucketKey(n.week, n.module);
+      const adopted = adoptedPlacementByNodeId.get(n.id);
+      const effectiveWeek = adopted?.week ?? n.week;
+      const effectiveModule = adopted?.module ?? n.module;
+      const key = bucketKey(effectiveWeek, effectiveModule);
       if (!map.has(key)) {
         map.set(key, {
           key,
-          week: n.week,
-          module: n.module,
+          week: effectiveWeek,
+          module: effectiveModule,
           items: [],
         });
       }
       map.get(key)!.items.push({
         key: `primary-${n.id}`,
         node: n,
-        moduleLabel: n.module,
+        moduleLabel: effectiveModule,
         isLinkedReference: false,
-        linkedViaAssignment: null,
+        linkedViaSource: null,
       });
     }
 
@@ -303,6 +360,11 @@ export default function AssignmentsPage() {
       const target = primaryById.get(link.target_id);
       const sourceNode = sourceById.get(link.source_id);
       if (!target || !sourceNode) {
+        continue;
+      }
+
+      if (adoptedPlacementByNodeId.has(target.id)) {
+        // Already moved into an inferred primary bucket; avoid duplicate linked copy.
         continue;
       }
 
@@ -332,7 +394,7 @@ export default function AssignmentsPage() {
         node: target,
         moduleLabel: sourceModule ?? target.module,
         isLinkedReference: true,
-          linkedViaAssignment: sourceNode.title,
+          linkedViaSource: sourceNode.title,
       });
     }
 
@@ -863,7 +925,7 @@ function WeekGroup({
             node={item.node}
             moduleLabel={item.moduleLabel}
             isLinkedReference={item.isLinkedReference}
-            linkedViaAssignment={item.linkedViaAssignment}
+            linkedViaSource={item.linkedViaSource}
             onClick={() => router.push(`/assignments/${item.node.id}`)}
             onAssign={!item.isLinkedReference && week === null ? onAssign : undefined}
             isDragSource={!item.isLinkedReference && isLinkableNodeType(item.node.type)}
@@ -888,7 +950,7 @@ function AssignmentCard({
   node,
   moduleLabel,
   isLinkedReference,
-  linkedViaAssignment,
+  linkedViaSource,
   onClick,
   onAssign,
   isDragSource,
@@ -902,7 +964,7 @@ function AssignmentCard({
   node: CourseNodeSummary;
   moduleLabel: string | null;
   isLinkedReference: boolean;
-  linkedViaAssignment: string | null;
+  linkedViaSource: string | null;
   onClick: () => void;
   onAssign?: (node: CourseNodeSummary) => void;
   isDragSource: boolean;
@@ -972,9 +1034,9 @@ function AssignmentCard({
             <p className="text-xs text-muted-foreground truncate">{moduleLabel}</p>
           )}
 
-          {isLinkedReference && linkedViaAssignment && (
+          {isLinkedReference && linkedViaSource && (
             <p className="text-[11px] text-muted-foreground/80 truncate">
-              Linked reference via {linkedViaAssignment}
+              Linked reference via {linkedViaSource}
             </p>
           )}
 

@@ -4,6 +4,7 @@ import { useEffect, useState, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import type {
+  AuditRuntimeState,
   CourseNode,
   CourseNodeSummary,
   Finding,
@@ -178,6 +179,11 @@ export default function AssignmentDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [auditLoading, setAuditLoading] = useState(false);
+  const [auditState, setAuditState] = useState<AuditRuntimeState>({
+    batch_active: false,
+    running_count: 0,
+    running_assignment_ids: [],
+  });
   const [activeTab, setActiveTab] = useState<string>("findings");
   const [assignmentOptions, setAssignmentOptions] = useState<Array<{ value: string; label: string; meta?: string | null }>>([]);
   const [selectedAssignmentLinks, setSelectedAssignmentLinks] = useState<string[]>([]);
@@ -315,6 +321,29 @@ export default function AssignmentDetailPage() {
     };
   }, [id]);
 
+  const fetchAuditState = useMemo(
+    () => async () => {
+      try {
+        const state = await api.getAuditState();
+        setAuditState(state);
+      } catch {
+        /* no-op */
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!id) return;
+    void fetchAuditState();
+
+    const interval = window.setInterval(() => {
+      void fetchAuditState();
+    }, 3000);
+
+    return () => window.clearInterval(interval);
+  }, [id, fetchAuditState]);
+
   // Group findings by pass
   const findingsByPass = useMemo(() => {
     const map = new Map<number, Finding[]>();
@@ -328,14 +357,19 @@ export default function AssignmentDetailPage() {
   // Start audit
   const handleStartAudit = async () => {
     if (!id) return;
+    if (auditState.batch_active) return;
+    if (auditState.running_assignment_ids.includes(id)) return;
+
     setAuditLoading(true);
     try {
       await api.startAudit(id);
+      await fetchAuditState();
       // Refetch findings after a short delay to allow processing
       setTimeout(async () => {
         try {
           const newFindings = await api.listFindings({ assignment_id: id });
           setFindings(newFindings.filter((f) => f.status === "active"));
+          await fetchAuditState();
         } catch {
           /* ignore */
         }
@@ -345,6 +379,9 @@ export default function AssignmentDetailPage() {
       setAuditLoading(false);
     }
   };
+
+  const assignmentRunActive = Boolean(id && auditState.running_assignment_ids.includes(id));
+  const runAuditDisabled = auditLoading || assignmentRunActive || auditState.batch_active;
 
   const handleSaveLinking = async () => {
     if (!node) return;
@@ -559,15 +596,25 @@ export default function AssignmentDetailPage() {
           {/* Run Audit button */}
           <button
             onClick={handleStartAudit}
-            disabled={auditLoading}
-            className="inline-flex items-center gap-2 rounded-lg bg-primary/15 border border-primary/25 px-4 py-2 text-sm font-medium text-primary hover:bg-primary/25 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+            disabled={runAuditDisabled}
+            className={`inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed shrink-0 ${
+              runAuditDisabled
+                ? "bg-muted/35 border border-muted/50 text-muted-foreground"
+                : "bg-primary/15 border border-primary/25 text-primary hover:bg-primary/25"
+            } ${assignmentRunActive ? "ring-2 ring-orange-400/70 animate-pulse" : ""}`}
           >
-            {auditLoading ? (
+            {auditLoading || assignmentRunActive || auditState.batch_active ? (
               <Loader2 className="size-4 animate-spin" />
             ) : (
               <Play className="size-4" />
             )}
-            {auditLoading ? "Running..." : "Run Audit"}
+            {auditLoading
+              ? "Starting..."
+              : assignmentRunActive
+                ? "Audit Running"
+                : auditState.batch_active
+                  ? "Locked: Course Audit Running"
+                  : "Run Audit"}
           </button>
         </div>
       </div>

@@ -26,6 +26,7 @@ router = APIRouter(prefix="/api/audit", tags=["audit"])
 # Track in-flight audit tasks for SSE streaming
 _audit_tasks: dict[str, asyncio.Task[AuditProgress]] = {}
 _audit_progress: dict[str, AuditProgress] = {}
+_batch_audit_active: bool = False
 
 
 @router.get("/runs")
@@ -117,6 +118,24 @@ async def start_audit(assignment_id: str) -> AuditRun:
     if node is None:
         raise HTTPException(status_code=404, detail=f"Node '{assignment_id}' not found")
 
+    if _batch_audit_active:
+        raise HTTPException(
+            status_code=409,
+            detail="A full-course audit is currently running. Wait for it to finish.",
+        )
+
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT id FROM audit_runs WHERE assignment_id = ? AND status = 'running' LIMIT 1",
+        (assignment_id,),
+    )
+    existing = await cursor.fetchone()
+    if existing is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"An audit is already running for '{assignment_id}'.",
+        )
+
     run_id = f"run-{uuid.uuid4().hex[:8]}"
 
     # Launch the audit in the background so the POST returns immediately
@@ -135,7 +154,6 @@ async def start_audit(assignment_id: str) -> AuditRun:
     # Wait briefly for the run record to be inserted by run_single_audit
     await asyncio.sleep(0.1)
 
-    db = await get_db()
     cursor = await db.execute("SELECT * FROM audit_runs WHERE id = ?", (run_id,))
     row = await cursor.fetchone()
     if row is None:
@@ -153,7 +171,40 @@ async def start_audit(assignment_id: str) -> AuditRun:
 @router.post("/all")
 async def start_audit_all(batch_size: int = 4) -> dict[str, object]:
     """Run audits on all assignment nodes in parallel batches."""
-    return await run_audit_all(batch_size=batch_size)
+    global _batch_audit_active
+
+    if _batch_audit_active:
+        raise HTTPException(status_code=409, detail="A full-course audit is already running.")
+
+    db = await get_db()
+    cursor = await db.execute("SELECT COUNT(*) FROM audit_runs WHERE status = 'running'")
+    running_count_row = await cursor.fetchone()
+    running_count = int(running_count_row[0]) if running_count_row and running_count_row[0] else 0
+    if running_count > 0:
+        raise HTTPException(
+            status_code=409,
+            detail="One or more audits are already running. Stop them before running Audit All.",
+        )
+
+    _batch_audit_active = True
+    try:
+        return await run_audit_all(batch_size=batch_size)
+    finally:
+        _batch_audit_active = False
+
+
+@router.get("/state")
+async def get_audit_runtime_state() -> dict[str, object]:
+    """Return aggregate runtime state for frontend lock/disable behavior."""
+    db = await get_db()
+    cursor = await db.execute("SELECT assignment_id FROM audit_runs WHERE status = 'running'")
+    running_rows = await cursor.fetchall()
+    running_assignment_ids = sorted({str(row[0]) for row in running_rows})
+    return {
+        "batch_active": _batch_audit_active,
+        "running_count": len(running_assignment_ids),
+        "running_assignment_ids": running_assignment_ids,
+    }
 
 
 @router.get("/summary")

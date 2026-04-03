@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
-import type { AuditRun, CourseNodeSummary } from "@/lib/types";
+import type { AuditRun, AuditRuntimeState, CourseNodeSummary } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -95,6 +95,11 @@ export default function AuditPage() {
   const [nodes, setNodes] = useState<CourseNodeSummary[]>([]);
   const [runs, setRuns] = useState<AuditRun[]>([]);
   const [selectedAssignment, setSelectedAssignment] = useState<string>("");
+  const [auditState, setAuditState] = useState<AuditRuntimeState>({
+    batch_active: false,
+    running_count: 0,
+    running_assignment_ids: [],
+  });
   const [loading, setLoading] = useState(true);
   const [auditLoading, setAuditLoading] = useState(false);
   const [allLoading, setAllLoading] = useState(false);
@@ -112,12 +117,14 @@ export default function AuditPage() {
   // --- Data fetching ---
   const fetchData = useCallback(async () => {
     try {
-      const [nodeData, runData] = await Promise.all([
+      const [nodeData, runData, runtimeState] = await Promise.all([
         api.listNodes({ type: "assignment" }),
         api.listAuditRuns(),
+        api.getAuditState(),
       ]);
       setNodes(nodeData);
       setRuns(runData);
+      setAuditState(runtimeState);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load data");
     } finally {
@@ -130,14 +137,22 @@ export default function AuditPage() {
   }, [fetchData]);
 
   // Poll for updates when any run is active
-  const hasRunning = runs.some((r) => r.status === "running");
+  const hasRunning = auditState.running_count > 0 || runs.some((r) => r.status === "running");
+  const selectedAssignmentRunning =
+    selectedAssignment.length > 0 && auditState.running_assignment_ids.includes(selectedAssignment);
+
   useEffect(() => {
-    if (!hasRunning) return;
+    if (!hasRunning && !auditState.batch_active) return;
     const interval = setInterval(() => {
-      api.listAuditRuns().then(setRuns).catch(() => {});
+      Promise.all([api.listAuditRuns(), api.getAuditState()])
+        .then(([nextRuns, state]) => {
+          setRuns(nextRuns);
+          setAuditState(state);
+        })
+        .catch(() => {});
     }, 3000);
     return () => clearInterval(interval);
-  }, [hasRunning]);
+  }, [hasRunning, auditState.batch_active]);
 
   // --- Grouped assignments by week ---
   const groupedByWeek = useMemo(() => {
@@ -295,29 +310,39 @@ export default function AuditPage() {
 
         <Button
           onClick={handleRunAudit}
-          disabled={!selectedAssignment || auditLoading}
+          disabled={!selectedAssignment || auditLoading || selectedAssignmentRunning || auditState.batch_active}
           className="gap-1.5"
         >
-          {auditLoading ? (
+          {auditLoading || selectedAssignmentRunning || auditState.batch_active ? (
             <Loader2Icon className="size-4 animate-spin" />
           ) : (
             <PlayIcon className="size-4" />
           )}
-          Run Audit
+          {auditLoading
+            ? "Starting..."
+            : selectedAssignmentRunning
+              ? "Audit Running"
+              : auditState.batch_active
+                ? "Locked: Batch Running"
+                : "Run Audit"}
         </Button>
 
         <Button
           variant="secondary"
           onClick={handleAuditAll}
-          disabled={allLoading}
+          disabled={allLoading || hasRunning || auditState.batch_active}
           className="gap-1.5"
         >
-          {allLoading ? (
+          {allLoading || hasRunning || auditState.batch_active ? (
             <Loader2Icon className="size-4 animate-spin" />
           ) : (
             <LayersIcon className="size-4" />
           )}
-          Audit All
+          {allLoading
+            ? "Starting Batch..."
+            : hasRunning || auditState.batch_active
+              ? "Audit In Progress"
+              : "Audit All"}
         </Button>
 
         <Button

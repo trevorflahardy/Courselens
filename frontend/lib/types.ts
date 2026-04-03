@@ -152,6 +152,12 @@ export interface AuditRun {
   error_message: string | null;
 }
 
+export interface AuditRuntimeState {
+  batch_active: boolean;
+  running_count: number;
+  running_assignment_ids: string[];
+}
+
 // --- SSE Event Types ---
 
 export type SSEEventType =

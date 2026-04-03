@@ -30,6 +30,7 @@ import type {
   GraphState,
   NodeGraphNeighbors,
   AuditRun,
+  AuditRuntimeState,
   DashboardStats,
   Rubric,
 } from "./types";
@@ -84,6 +85,8 @@ export const api = {
     request<AuditRun>(`/api/audit/${assignmentId}`, { method: "POST" }),
 
   listAuditRuns: () => request<AuditRun[]>("/api/audit/runs"),
+
+  getAuditState: () => request<AuditRuntimeState>("/api/audit/state"),
 
   getAuditRun: (runId: string) => request<AuditRun>(`/api/audit/runs/${runId}`),
 
