@@ -64,8 +64,6 @@ async def start_audit_run(
         "stream-json",
         "--verbose",
         "--dangerously-skip-permissions",
-        "--max-turns",
-        "150",
     ]
 
     if allowed_tools:
@@ -182,7 +180,10 @@ async def tail_run(run_id: str) -> AsyncGenerator[dict[str, object], None]:
     else:
         state.status = "error"
         stderr_summary = " | ".join(stderr_lines[-10:]) if stderr_lines else "(no stderr)"
-        yield {"type": "error", "message": f"Claude exited with code {return_code}: {stderr_summary[:500]}"}
+        yield {
+            "type": "error",
+            "message": f"Claude exited with code {return_code}: {stderr_summary[:500]}",
+        }
 
 
 def get_run_state(run_id: str) -> RunState | None:
