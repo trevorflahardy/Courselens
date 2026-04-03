@@ -1,11 +1,11 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { ForceGraph, NODE_COLORS } from "@/components/graph/ForceGraph";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/lib/api";
-import type { CourseNode, CourseNodeSummary, GraphEdge } from "@/lib/types";
+import type { CourseNode, CourseNodeSummary, GraphEdge, NodeType } from "@/lib/types";
 
 type FilterMode = "all" | "connected" | "gaps" | "orphans" | "inferred";
 
@@ -15,6 +15,15 @@ const FILTER_OPTIONS: { value: FilterMode; label: string; description: string }[
   { value: "gaps", label: "Gaps Only", description: "Must-fix issues" },
   { value: "orphans", label: "Orphans", description: "Disconnected nodes" },
   { value: "inferred", label: "Inferred Edges", description: "AI-derived links" },
+];
+
+const NODE_TYPE_OPTIONS: { value: NodeType; label: string }[] = [
+  { value: "assignment", label: "Assignments" },
+  { value: "page", label: "Pages" },
+  { value: "rubric", label: "Rubrics" },
+  { value: "lecture", label: "Lectures" },
+  { value: "announcement", label: "Announcements" },
+  { value: "file", label: "Files" },
 ];
 
 function sanitizeHtml(html: string): string {
@@ -38,12 +47,15 @@ export default function GraphPage() {
   const [edges, setEdges] = useState<GraphEdge[]>([]);
   const [filter, setFilter] = useState<FilterMode>("all");
   const [hideImageFiles, setHideImageFiles] = useState(true);
+  const [hiddenNodeTypes, setHiddenNodeTypes] = useState<NodeType[]>([]);
+  const [typeMenuOpen, setTypeMenuOpen] = useState(false);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<CourseNodeSummary | null>(null);
   const [selectedNodeDetail, setSelectedNodeDetail] = useState<CourseNode | null>(null);
   const [selectedNodeDetailLoading, setSelectedNodeDetailLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const nodeTypeMenuRef = useRef<HTMLDivElement>(null);
 
   // Fetch graph data
   useEffect(() => {
@@ -108,6 +120,42 @@ export default function GraphPage() {
   const handleNodeClick = useCallback((nodeId: string) => {
     setSelectedNodeId((prev) => (prev === nodeId ? null : nodeId));
   }, []);
+
+  const toggleNodeType = useCallback((type: NodeType) => {
+    setHiddenNodeTypes((prev) => {
+      if (prev.includes(type)) {
+        return prev.filter((t) => t !== type);
+      }
+      return [...prev, type];
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!typeMenuOpen) return;
+
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (!nodeTypeMenuRef.current?.contains(target)) {
+        setTypeMenuOpen(false);
+      }
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setTypeMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [typeMenuOpen]);
+
+  const visibleNodeTypeCount = NODE_TYPE_OPTIONS.length - hiddenNodeTypes.length;
 
   // Stats
   const totalNodes = nodes.length;
@@ -175,6 +223,81 @@ export default function GraphPage() {
 
         {/* Filter toggles */}
         <div className="flex items-center gap-2">
+          <div className="relative" ref={nodeTypeMenuRef}>
+            <button
+              type="button"
+              onClick={() => setTypeMenuOpen((open) => !open)}
+              aria-expanded={typeMenuOpen}
+              aria-haspopup="menu"
+              className={`
+                px-3 py-1.5 rounded-md text-[11px] font-medium transition-all duration-150 border
+                ${
+                  typeMenuOpen || hiddenNodeTypes.length > 0
+                    ? "bg-primary/20 text-primary border-primary/40"
+                    : "bg-white/3 text-muted-foreground border-white/10 hover:text-foreground"
+                }
+              `}
+              title="Show or hide node types"
+            >
+              Node Types {visibleNodeTypeCount}/{NODE_TYPE_OPTIONS.length}
+            </button>
+
+            {typeMenuOpen && (
+              <div
+                role="menu"
+                className="absolute right-0 mt-2 w-64 rounded-xl border border-white/8 bg-black/75 backdrop-blur-xl p-3 shadow-2xl z-30"
+              >
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-[10px] font-semibold text-muted-foreground/60 uppercase tracking-wider">
+                    Node Visibility
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setHiddenNodeTypes([])}
+                    className="text-[10px] text-primary hover:underline disabled:text-muted-foreground/50 disabled:no-underline"
+                    disabled={hiddenNodeTypes.length === 0}
+                  >
+                    Show all
+                  </button>
+                </div>
+
+                <div className="space-y-1.5">
+                  {NODE_TYPE_OPTIONS.map((option) => {
+                    const hidden = hiddenNodeTypes.includes(option.value);
+                    return (
+                      <button
+                        key={option.value}
+                        role="menuitemcheckbox"
+                        aria-checked={!hidden}
+                        type="button"
+                        onClick={() => toggleNodeType(option.value)}
+                        className={`
+                          w-full flex items-center justify-between rounded-lg border px-2.5 py-2 text-left transition-colors
+                          ${
+                            hidden
+                              ? "border-white/8 bg-white/2 text-muted-foreground/55"
+                              : "border-primary/30 bg-primary/10 text-foreground"
+                          }
+                        `}
+                      >
+                        <span className="flex items-center gap-2">
+                          <span
+                            className="inline-block h-2.5 w-2.5 rounded-full"
+                            style={{ background: NODE_COLORS[option.value] }}
+                          />
+                          <span className="text-[11px]">{option.label}</span>
+                        </span>
+                        <span className="text-[10px] font-medium">
+                          {hidden ? "Hidden" : "Visible"}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+
           <button
             onClick={() => setHideImageFiles((prev) => !prev)}
             className={`
@@ -261,6 +384,7 @@ export default function GraphPage() {
             edges={edges}
             filter={filter}
             hideImageFiles={hideImageFiles}
+            hiddenNodeTypes={hiddenNodeTypes}
             onNodeClick={handleNodeClick}
             selectedNodeId={selectedNodeId}
           />

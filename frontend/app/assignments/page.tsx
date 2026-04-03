@@ -128,6 +128,13 @@ interface DisplayNode {
   linkedViaAssignment: string | null;
 }
 
+interface GroupedNodes {
+  key: string;
+  week: number | null;
+  module: string | null;
+  items: DisplayNode[];
+}
+
 export default function AssignmentsPage() {
   const router = useRouter();
   const [nodes, setNodes] = useState<CourseNodeSummary[]>([]);
@@ -197,16 +204,24 @@ export default function AssignmentsPage() {
 
   // Group by week
   const grouped = useMemo(() => {
-    const map = new Map<number | null, DisplayNode[]>();
+    const bucketKey = (week: number | null, module: string | null) => `${week ?? "none"}::${module ?? ""}`;
+    const map = new Map<string, GroupedNodes>();
     const primaryById = new Map(filtered.map((node) => [node.id, node]));
     const assignmentById = new Map(
       nodes.filter((node) => node.type === "assignment").map((node) => [node.id, node]),
     );
 
     for (const n of filtered) {
-      const key = n.week;
-      if (!map.has(key)) map.set(key, []);
-      map.get(key)!.push({
+      const key = bucketKey(n.week, n.module);
+      if (!map.has(key)) {
+        map.set(key, {
+          key,
+          week: n.week,
+          module: n.module,
+          items: [],
+        });
+      }
+      map.get(key)!.items.push({
         key: `primary-${n.id}`,
         node: n,
         moduleLabel: n.module,
@@ -239,8 +254,16 @@ export default function AssignmentsPage() {
       }
       seenReferenceKeys.add(dedupeKey);
 
-      if (!map.has(sourceWeek)) map.set(sourceWeek, []);
-      map.get(sourceWeek)!.push({
+      const groupKey = bucketKey(sourceWeek, sourceModule ?? target.module);
+      if (!map.has(groupKey)) {
+        map.set(groupKey, {
+          key: groupKey,
+          week: sourceWeek,
+          module: sourceModule ?? target.module,
+          items: [],
+        });
+      }
+      map.get(groupKey)!.items.push({
         key: `linked-${target.id}-${sourceAssignment.id}`,
         node: target,
         moduleLabel: sourceModule ?? target.module,
@@ -249,16 +272,19 @@ export default function AssignmentsPage() {
       });
     }
 
-    // Sort: numbered weeks ascending, null at end
-    const entries = Array.from(map.entries()).sort((a, b) => {
-      if (a[0] === null && b[0] === null) return 0;
-      if (a[0] === null) return 1;
-      if (b[0] === null) return -1;
-      return a[0] - b[0];
+    // Sort groups by week first, then module label
+    const entries = Array.from(map.values()).sort((a, b) => {
+      if (a.week === null && b.week === null) {
+        return (a.module ?? "").localeCompare(b.module ?? "");
+      }
+      if (a.week === null) return 1;
+      if (b.week === null) return -1;
+      if (a.week !== b.week) return a.week - b.week;
+      return (a.module ?? "").localeCompare(b.module ?? "");
     });
 
-    for (const [, items] of entries) {
-      items.sort((a, b) => {
+    for (const group of entries) {
+      group.items.sort((a, b) => {
         if (a.isLinkedReference !== b.isLinkedReference) {
           return a.isLinkedReference ? 1 : -1;
         }
@@ -506,11 +532,12 @@ export default function AssignmentsPage() {
         <EmptyState hasFilters={activeFilters.length > 0} onClear={clearAllFilters} />
       ) : (
         <div className="space-y-8">
-          {grouped.map(([week, items]) => (
+          {grouped.map((group) => (
             <WeekGroup
-              key={week ?? "none"}
-              week={week}
-              items={items}
+              key={group.key}
+              week={group.week}
+              module={group.module}
+              items={group.items}
               router={router}
               onAssign={openAssignDialog}
             />
@@ -632,11 +659,13 @@ function EmptyState({
 
 function WeekGroup({
   week,
+  module,
   items,
   router,
   onAssign,
 }: {
   week: number | null;
+  module: string | null;
   items: DisplayNode[];
   router: ReturnType<typeof useRouter>;
   onAssign?: (node: CourseNodeSummary) => void;
@@ -646,7 +675,7 @@ function WeekGroup({
       {/* Week header */}
       <div className="flex items-center gap-2.5">
         <h2 className="text-sm font-semibold tracking-tight text-foreground/90">
-          {week !== null ? `Week ${week}` : "Unassigned"}
+          {module ?? (week !== null ? `Week ${week}` : "Unassigned")}
         </h2>
         <span className="text-xs text-muted-foreground tabular-nums">
           {items.length} item{items.length !== 1 ? "s" : ""}

@@ -623,7 +623,7 @@ export function ForceGraph({
       {/* Tooltip */}
       {tooltip && (
         <div
-          className="absolute pointer-events-none z-50 bg-black/80 backdrop-blur-md border border-white/[0.12] rounded-lg px-3 py-2 shadow-xl"
+          className="absolute pointer-events-none z-50 bg-black/80 backdrop-blur-md border border-white/12 rounded-lg px-3 py-2 shadow-xl"
           style={{
             left: tooltip.x + 16,
             top: tooltip.y - 8,
