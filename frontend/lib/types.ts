@@ -8,7 +8,7 @@ export type FindingSeverity = "gap" | "warn" | "info" | "ok";
 export type FindingStatus = "active" | "stale" | "resolved" | "superseded" | "confirmed";
 export type EdgeType = "explicit" | "inferred" | "artifact" | "gap";
 export type EdgeStatus = "active" | "stale";
-export type AuditStatus = "running" | "done" | "error";
+export type AuditStatus = "running" | "done" | "error" | "paused";
 
 export type FindingType =
   | "clarity"
@@ -167,6 +167,9 @@ export interface AuditRun {
   started_at: string;
   finished_at: string | null;
   error_message: string | null;
+  completed_passes: number;
+  paused_at: string | null;
+  resume_reason: string | null;
 }
 
 export interface AuditRuntimeState {
@@ -183,11 +186,17 @@ export type SSEEventType =
   | "pass_done"
   | "heartbeat"
   | "done"
-  | "error";
+  | "error"
+  | "thinking";
+
+export interface ThinkingPayload {
+  text: string;
+  pass: number;
+}
 
 export interface SSEEvent {
   type: SSEEventType;
-  data: Finding | { pass: number } | { message: string } | null;
+  data: Finding | { pass: number } | { message: string } | ThinkingPayload | null;
 }
 
 // --- Dashboard Stats ---

@@ -164,6 +164,28 @@ async def emit_finding(
 
 
 @emit_mcp.tool()
+async def emit_checkpoint(
+    audit_run_id: str,
+    pass_number: int,
+    summary: str,
+) -> str:
+    """Record that a pass is complete. Called by Claude at the end of each audit pass.
+
+    Idempotent — uses MAX so a re-call never decrements completed_passes.
+    """
+    await _ensure_db()
+    from backend.db import get_db  # noqa: PLC0415
+
+    db = await get_db()
+    await db.execute(
+        "UPDATE audit_runs SET completed_passes = MAX(completed_passes, ?) WHERE id = ?",
+        (pass_number, audit_run_id),
+    )
+    await db.commit()
+    return json.dumps({"ok": True, "audit_run_id": audit_run_id, "pass_number": pass_number, "summary": summary})
+
+
+@emit_mcp.tool()
 async def emit_resolve_stale(assignment_id: str) -> str:
     """After re-audit: resolve unmatched stale findings, confirm matched ones."""
     await _ensure_db()

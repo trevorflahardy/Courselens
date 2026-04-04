@@ -109,6 +109,83 @@ async def cancel_run(run_id: str) -> AuditRun:
     return AuditRun.model_validate(dict(updated), strict=False)
 
 
+@router.post("/runs/{run_id}/resume")
+async def resume_audit(run_id: str) -> AuditRun:
+    """Resume a paused audit run from where it left off."""
+    db = await get_db()
+    cursor = await db.execute("SELECT * FROM audit_runs WHERE id = ?", (run_id,))
+    row = await cursor.fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Audit run '{run_id}' not found")
+
+    run = AuditRun.model_validate(dict(row), strict=False)
+    if run.status != AuditStatus.PAUSED:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Run '{run_id}' is not paused (status: {run.status}). Only paused runs can be resumed.",
+        )
+
+    start_pass = (run.completed_passes or 0) + 1
+    if start_pass > 3:
+        raise HTTPException(status_code=409, detail="All passes already completed — nothing to resume.")
+
+    # Mark as running again
+    await db.execute(
+        "UPDATE audit_runs SET status = 'running', paused_at = NULL WHERE id = ?",
+        (run_id,),
+    )
+    await db.commit()
+
+    # Re-register progress tracker so SSE can stream the resumed run
+    _audit_progress[run_id] = AuditProgress(
+        run_id=run_id,
+        assignment_id=run.assignment_id,
+        completed_passes=run.completed_passes or 0,
+    )
+
+    async def _resume() -> AuditProgress:
+        progress = await run_single_audit(run.assignment_id, run_id=run_id, start_pass=start_pass)
+        _audit_progress[run_id] = progress
+        _audit_tasks.pop(run_id, None)
+        return progress
+
+    task = asyncio.create_task(_resume())
+    _audit_tasks[run_id] = task
+
+    await asyncio.sleep(0.1)
+
+    cursor = await db.execute("SELECT * FROM audit_runs WHERE id = ?", (run_id,))
+    updated = await cursor.fetchone()
+    if updated is None:
+        raise HTTPException(status_code=404, detail=f"Audit run '{run_id}' not found after resume")
+    return AuditRun.model_validate(dict(updated), strict=False)
+
+
+@router.post("/all")
+async def start_audit_all(batch_size: int = 4) -> dict[str, object]:
+    """Run audits on all assignment nodes in parallel batches."""
+    global _batch_audit_active
+
+    if _batch_audit_active:
+        raise HTTPException(status_code=409, detail="A full-course audit is already running.")
+
+    db = await get_db()
+    cursor = await db.execute("SELECT COUNT(*) FROM audit_runs WHERE status = 'running'")
+    running_count_row = await cursor.fetchone()
+    running_count = int(running_count_row[0]) if running_count_row and running_count_row[0] else 0
+    if running_count > 0:
+        raise HTTPException(
+            status_code=409,
+            detail="One or more audits are already running. Stop them before running Audit All.",
+        )
+
+    _batch_audit_active = True
+    try:
+        return await run_audit_all(batch_size=batch_size)
+    finally:
+        _batch_audit_active = False
+
+
 @router.post("/{assignment_id}")
 async def start_audit(assignment_id: str) -> AuditRun:
     """Start an audit run for an assignment. Spawns a Claude subprocess."""
@@ -126,11 +203,20 @@ async def start_audit(assignment_id: str) -> AuditRun:
 
     db = await get_db()
     cursor = await db.execute(
-        "SELECT id FROM audit_runs WHERE assignment_id = ? AND status = 'running' LIMIT 1",
+        "SELECT id, status FROM audit_runs WHERE assignment_id = ? AND status IN ('running','paused') LIMIT 1",
         (assignment_id,),
     )
     existing = await cursor.fetchone()
     if existing is not None:
+        existing_status = str(existing[1])
+        if existing_status == "paused":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"A paused audit exists for '{assignment_id}' (run: {existing[0]}). "
+                    "Resume it via POST /api/audit/runs/{run_id}/resume or cancel it first."
+                ),
+            )
         raise HTTPException(
             status_code=409,
             detail=f"An audit is already running for '{assignment_id}'.",
@@ -166,31 +252,6 @@ async def start_audit(assignment_id: str) -> AuditRun:
             started_at=datetime.fromisoformat(now),
         )
     return AuditRun.model_validate(dict(row), strict=False)
-
-
-@router.post("/all")
-async def start_audit_all(batch_size: int = 4) -> dict[str, object]:
-    """Run audits on all assignment nodes in parallel batches."""
-    global _batch_audit_active
-
-    if _batch_audit_active:
-        raise HTTPException(status_code=409, detail="A full-course audit is already running.")
-
-    db = await get_db()
-    cursor = await db.execute("SELECT COUNT(*) FROM audit_runs WHERE status = 'running'")
-    running_count_row = await cursor.fetchone()
-    running_count = int(running_count_row[0]) if running_count_row and running_count_row[0] else 0
-    if running_count > 0:
-        raise HTTPException(
-            status_code=409,
-            detail="One or more audits are already running. Stop them before running Audit All.",
-        )
-
-    _batch_audit_active = True
-    try:
-        return await run_audit_all(batch_size=batch_size)
-    finally:
-        _batch_audit_active = False
 
 
 @router.get("/state")
@@ -244,7 +305,7 @@ async def stream_audit(run_id: str) -> StreamingResponse:
                     seen_events = len(progress.events)
                 else:
                     yield _sse_event("heartbeat", {"message": "audit in progress"})
-                await asyncio.sleep(1)
+                await asyncio.sleep(0.25)
 
             # Emit any remaining events after task completes
             progress = _audit_progress.get(run_id)
@@ -297,6 +358,16 @@ async def stream_audit(run_id: str) -> StreamingResponse:
                     "error",
                     {
                         "message": run.error_message or "Unknown error",
+                    },
+                )
+            elif run.status == AuditStatus.PAUSED:
+                yield _sse_event(
+                    "error",
+                    {
+                        "message": f"Audit paused (rate limited after pass {run.completed_passes}). "
+                                   f"Resume via POST /api/audit/runs/{run_id}/resume",
+                        "paused": True,
+                        "completed_passes": run.completed_passes,
                     },
                 )
             else:

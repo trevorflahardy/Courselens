@@ -12,6 +12,7 @@ class AuditStatus(StrEnum):
     RUNNING = "running"
     DONE = "done"
     ERROR = "error"
+    PAUSED = "paused"
 
 
 class AuditRun(BaseModel):
@@ -27,3 +28,6 @@ class AuditRun(BaseModel):
     started_at: datetime = Field(default_factory=datetime.now)
     finished_at: datetime | None = None
     error_message: str | None = None
+    completed_passes: int = 0
+    paused_at: datetime | None = None
+    resume_reason: str | None = None

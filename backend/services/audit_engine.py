@@ -26,12 +26,17 @@ logger = logging.getLogger(__name__)
 
 # MCP tools the audit subprocess is allowed to call
 AUDIT_ALLOWED_TOOLS = [
-    "mcp__audit__nodes_read",
-    "mcp__audit__nodes_read_many",
-    "mcp__audit__nodes_list",
-    "mcp__audit__emit_finding",
-    "mcp__audit__emit_resolve_stale",
+    "mcp__audit__nodes_nodes_read",
+    "mcp__audit__nodes_nodes_read_many",
+    "mcp__audit__nodes_nodes_list",
+    "mcp__audit__emit_emit_finding",
+    "mcp__audit__emit_emit_resolve_stale",
+    "mcp__audit__emit_emit_checkpoint",
 ]
+
+
+class RateLimitError(Exception):
+    """Raised when Claude subprocess reports HTTP 429 / rate limiting."""
 
 
 @dataclass
@@ -46,6 +51,8 @@ class AuditProgress:
     pass3_findings: int = 0
     status: str = "running"
     events: list[dict[str, object]] = field(default_factory=list)
+    completed_passes: int = 0
+    rate_limited: bool = False
 
 
 def _build_pass1_prompt(
@@ -117,7 +124,9 @@ def _build_pass1_prompt(
             f"Use `audit_run_id`: `{run_id}` and `pass_number`: 1 for all findings.",
             f"Use `assignment_id`: `{node_id}` for all findings.",
             "",
-            "After completing your analysis, output a brief summary of what you found.",
+            "After completing your analysis, call `emit_checkpoint` with `audit_run_id`:"
+            f" `{run_id}`, `pass_number`: 1, and a one-sentence summary of what you found.",
+            "Then output a brief human-readable summary.",
         ]
     )
     return "\n".join(parts)
@@ -175,7 +184,9 @@ def _build_pass2_prompt(
             f"Use `assignment_id`: `{node_id}` for all findings.",
             "",
             "If a dependency exists and IS properly stated, emit an `ok` finding noting the healthy link.",
-            "After analysis, output a brief summary.",
+            "After completing your analysis, call `emit_checkpoint` with `audit_run_id`:"
+            f" `{run_id}`, `pass_number`: 2, and a one-sentence summary.",
+            "Then output a brief human-readable summary.",
         ]
     )
     return "\n".join(parts)
@@ -232,7 +243,9 @@ def _build_pass3_prompt(
             f"Use `audit_run_id`: `{run_id}` and `pass_number`: 3 for all findings.",
             f"Use `assignment_id`: `{node_id}` for all findings.",
             "",
-            "After analysis, output a brief summary.",
+            "After completing your analysis, call `emit_checkpoint` with `audit_run_id`:"
+            f" `{run_id}`, `pass_number`: 3, and a one-sentence summary.",
+            "Then output a brief human-readable summary.",
         ]
     )
     return "\n".join(parts)
@@ -305,11 +318,14 @@ async def _get_neighbor_summaries(node_id: str, direction: str = "incoming") -> 
 async def run_single_audit(
     assignment_id: str,
     run_id: str | None = None,
+    start_pass: int = 1,
 ) -> AuditProgress:
     """Run a full 3-pass audit on a single assignment.
 
-    This orchestrates the entire audit: builds prompts, spawns Claude
-    subprocesses for each pass, parses findings, and updates the DB.
+    Args:
+        assignment_id: Node ID to audit.
+        run_id: Existing run ID (for resumes) or None to create a new one.
+        start_pass: Which pass to start from (1=fresh, 2 or 3=resume after rate-limit).
     """
     if run_id is None:
         run_id = f"run-{uuid.uuid4().hex[:8]}"
@@ -326,53 +342,90 @@ async def run_single_audit(
     db = await get_db()
     now = datetime.now().isoformat()
 
-    # Create audit run record
-    await db.execute(
-        """INSERT OR REPLACE INTO audit_runs
-           (id, assignment_id, status, started_at)
-           VALUES (?, ?, 'running', ?)""",
-        (run_id, assignment_id, now),
-    )
-    await db.commit()
+    if start_pass == 1:
+        # Fresh run — create audit record
+        await db.execute(
+            """INSERT OR REPLACE INTO audit_runs
+               (id, assignment_id, status, started_at)
+               VALUES (?, ?, 'running', ?)""",
+            (run_id, assignment_id, now),
+        )
+        await db.commit()
+    else:
+        # Resume — restore prior pass counts from DB, mark running again
+        cursor = await db.execute(
+            "SELECT pass1_findings, pass2_findings, pass3_findings, completed_passes FROM audit_runs WHERE id = ?",
+            (run_id,),
+        )
+        row = await cursor.fetchone()
+        if row:
+            progress.pass1_findings = int(row[0] or 0)
+            progress.pass2_findings = int(row[1] or 0)
+            progress.pass3_findings = int(row[2] or 0)
+            progress.completed_passes = int(row[3] or 0)
 
     # Fetch rubric text
     rubric_text = await _get_rubric_text(assignment_id)
 
     # === PASS 1: Standalone Clarity ===
-    progress.current_pass = 1
-    progress.events.append({"type": "pass_start", "pass": 1, "run_id": run_id})
+    if start_pass <= 1:
+        progress.current_pass = 1
+        progress.events.append({"type": "pass_start", "pass": 1, "run_id": run_id})
 
-    pass1_prompt = _build_pass1_prompt(
-        node_id=assignment_id,
-        title=node.title,
-        description=node.description,
-        points=node.points_possible,
-        submission_types=node.submission_types,
-        rubric_text=rubric_text,
-        run_id=run_id,
-    )
+        pass1_prompt = _build_pass1_prompt(
+            node_id=assignment_id,
+            title=node.title,
+            description=node.description,
+            points=node.points_possible,
+            submission_types=node.submission_types,
+            rubric_text=rubric_text,
+            run_id=run_id,
+        )
 
-    pass1_findings = await _execute_pass(run_id, assignment_id, pass1_prompt, 1)
-    progress.pass1_findings = pass1_findings
-    progress.events.append({"type": "pass_done", "pass": 1, "findings": pass1_findings})
+        try:
+            pass1_findings = await _execute_pass(run_id, assignment_id, pass1_prompt, 1, progress)
+        except RateLimitError as e:
+            await _handle_rate_limit(run_id, 1, str(e), progress)
+            return progress
+
+        progress.pass1_findings = pass1_findings
+        progress.completed_passes = 1
+        progress.events.append({"type": "pass_done", "pass": 1, "findings": pass1_findings})
+        await db.execute(
+            "UPDATE audit_runs SET completed_passes = 1, pass1_findings = ? WHERE id = ?",
+            (pass1_findings, run_id),
+        )
+        await db.commit()
 
     # === PASS 2: Backward Dependencies ===
-    progress.current_pass = 2
-    progress.events.append({"type": "pass_start", "pass": 2, "run_id": run_id})
+    if start_pass <= 2:
+        progress.current_pass = 2
+        progress.events.append({"type": "pass_start", "pass": 2, "run_id": run_id})
 
-    neighbor_summaries = await _get_neighbor_summaries(assignment_id, "incoming")
-    pass2_prompt = _build_pass2_prompt(
-        node_id=assignment_id,
-        title=node.title,
-        week=node.week,
-        description=node.description,
-        neighbor_summaries=neighbor_summaries,
-        run_id=run_id,
-    )
+        neighbor_summaries = await _get_neighbor_summaries(assignment_id, "incoming")
+        pass2_prompt = _build_pass2_prompt(
+            node_id=assignment_id,
+            title=node.title,
+            week=node.week,
+            description=node.description,
+            neighbor_summaries=neighbor_summaries,
+            run_id=run_id,
+        )
 
-    pass2_findings = await _execute_pass(run_id, assignment_id, pass2_prompt, 2)
-    progress.pass2_findings = pass2_findings
-    progress.events.append({"type": "pass_done", "pass": 2, "findings": pass2_findings})
+        try:
+            pass2_findings = await _execute_pass(run_id, assignment_id, pass2_prompt, 2, progress)
+        except RateLimitError as e:
+            await _handle_rate_limit(run_id, 2, str(e), progress)
+            return progress
+
+        progress.pass2_findings = pass2_findings
+        progress.completed_passes = 2
+        progress.events.append({"type": "pass_done", "pass": 2, "findings": pass2_findings})
+        await db.execute(
+            "UPDATE audit_runs SET completed_passes = 2, pass2_findings = ? WHERE id = ?",
+            (pass2_findings, run_id),
+        )
+        await db.commit()
 
     # === PASS 3: Forward Impact ===
     progress.current_pass = 3
@@ -388,21 +441,28 @@ async def run_single_audit(
         run_id=run_id,
     )
 
-    pass3_findings = await _execute_pass(run_id, assignment_id, pass3_prompt, 3)
+    try:
+        pass3_findings = await _execute_pass(run_id, assignment_id, pass3_prompt, 3, progress)
+    except RateLimitError as e:
+        await _handle_rate_limit(run_id, 3, str(e), progress)
+        return progress
+
     progress.pass3_findings = pass3_findings
+    progress.completed_passes = 3
     progress.events.append({"type": "pass_done", "pass": 3, "findings": pass3_findings})
 
     # === Finalize ===
-    total = pass1_findings + pass2_findings + pass3_findings
+    total = progress.pass1_findings + progress.pass2_findings + progress.pass3_findings
     finished_at = datetime.now().isoformat()
 
     await db.execute(
         """UPDATE audit_runs
            SET status = 'done',
                pass1_findings = ?, pass2_findings = ?, pass3_findings = ?,
-               total_findings = ?, finished_at = ?
+               total_findings = ?, finished_at = ?, completed_passes = 3
            WHERE id = ?""",
-        (pass1_findings, pass2_findings, pass3_findings, total, finished_at, run_id),
+        (progress.pass1_findings, progress.pass2_findings, progress.pass3_findings,
+         total, finished_at, run_id),
     )
     await db.commit()
 
@@ -418,11 +478,41 @@ async def run_single_audit(
     logger.info(
         "Audit complete: %s — P1=%d, P2=%d, P3=%d findings",
         assignment_id,
-        pass1_findings,
-        pass2_findings,
-        pass3_findings,
+        progress.pass1_findings,
+        progress.pass2_findings,
+        progress.pass3_findings,
     )
     return progress
+
+
+async def _handle_rate_limit(
+    run_id: str,
+    failed_pass: int,
+    reason: str,
+    progress: AuditProgress,
+) -> None:
+    """Persist a rate-limited run as paused and update in-memory progress."""
+    db = await get_db()
+    paused_at = datetime.now().isoformat()
+    await db.execute(
+        """UPDATE audit_runs
+           SET status = 'paused', paused_at = ?, resume_reason = ?
+           WHERE id = ?""",
+        (paused_at, f"Rate limited during pass {failed_pass}: {reason[:500]}", run_id),
+    )
+    await db.commit()
+    progress.status = "paused"
+    progress.rate_limited = True
+    progress.events.append(
+        {
+            "type": "error",
+            "message": f"Audit rate-limited during pass {failed_pass}. Resume via the Resume button.",
+            "paused": True,
+            "completed_passes": progress.completed_passes,
+            "run_id": run_id,
+        }
+    )
+    logger.warning("Audit %s paused at pass %d due to rate limit: %s", run_id, failed_pass, reason)
 
 
 async def _execute_pass(
@@ -430,10 +520,12 @@ async def _execute_pass(
     assignment_id: str,
     prompt: str,
     pass_number: int,
+    progress: AuditProgress | None = None,
 ) -> int:
     """Execute a single audit pass via Claude subprocess.
 
     Returns the number of findings emitted.
+    Raises RateLimitError if Claude is rate-limited.
     """
     pass_run_id = f"{run_id}-p{pass_number}"
     findings_count = 0
@@ -445,28 +537,34 @@ async def _execute_pass(
             prompt=prompt,
             allowed_tools=AUDIT_ALLOWED_TOOLS,
         )
+        # Set pass context so tail_run can tag thinking events
+        state.current_pass = pass_number
 
         if state.status == "error":
             logger.error("Failed to start pass %d for %s", pass_number, assignment_id)
             return 0
 
-        # Tail the subprocess output and count findings
+        # Tail subprocess output: forward thinking events, detect rate-limits
         async for event in tail_run(pass_run_id):
-            event_type = event.get("type", "")
+            event_type = str(event.get("type", ""))
 
-            # Count tool_use events that are emit_finding calls
+            # Forward thinking events up to AuditProgress for SSE streaming
+            if event_type == "thinking" and progress is not None:
+                progress.events.append(event)
+                continue
+
+            # Detect rate-limit errors from subprocess
+            if event_type == "error" and event.get("rate_limited"):
+                raise RateLimitError(str(event.get("message", "Rate limited")))
+
+            # Count tool_use events for emit_finding (matches mcp__audit__emit_emit_finding)
             if event_type == "tool_use" and "emit_finding" in str(event.get("tool", "")):
                 findings_count += 1
 
-            # Also check for result messages that contain finding data
-            if event_type == "result":
-                # The Claude subprocess emits findings via MCP tools
-                # which get recorded in the DB automatically
-                pass
-
+    except RateLimitError:
+        raise  # propagate to run_single_audit
     except Exception as e:
         logger.exception("Error in pass %d for %s: %s", pass_number, assignment_id, e)
-        # Record the error but don't fail the entire audit
         db = await get_db()
         await db.execute(
             """UPDATE audit_runs SET error_message = COALESCE(error_message, '') || ?

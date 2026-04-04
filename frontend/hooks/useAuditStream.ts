@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
-import type { Finding, SSEEvent, SSEEventType } from "@/lib/types";
+import type { Finding, SSEEvent, SSEEventType, ThinkingPayload } from "@/lib/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -13,6 +13,8 @@ export interface UseAuditStreamReturn {
   currentPass: number;
   status: StreamStatus;
   error: string | null;
+  thinkingText: string;
+  thinkingPass: number;
   connect: (runId: string) => void;
   disconnect: () => void;
 }
@@ -26,6 +28,8 @@ export function useAuditStream(): UseAuditStreamReturn {
   const [currentPass, setCurrentPass] = useState<number>(0);
   const [status, setStatus] = useState<StreamStatus>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [thinkingText, setThinkingText] = useState<string>("");
+  const [thinkingPass, setThinkingPass] = useState<number>(0);
 
   const esRef = useRef<EventSource | null>(null);
   const reconnectAttempts = useRef(0);
@@ -53,6 +57,8 @@ export function useAuditStream(): UseAuditStreamReturn {
       reconnectAttempts.current = 0;
       setError(null);
       setStatus("connecting");
+      setThinkingText("");
+      setThinkingPass(0);
 
       function openConnection() {
         const url = `${API_BASE}/api/audit/${runId}/stream`;
@@ -101,6 +107,17 @@ export function useAuditStream(): UseAuditStreamReturn {
             const finding = JSON.parse(e.data) as Finding;
             setFindings((prev) => [...prev, finding]);
             pushEvent("finding", finding);
+          } catch {
+            // ignore
+          }
+        });
+
+        es.addEventListener("thinking", (e: MessageEvent) => {
+          try {
+            const data = JSON.parse(e.data) as ThinkingPayload;
+            setThinkingText((prev) => prev + data.text);
+            setThinkingPass(data.pass);
+            pushEvent("thinking", data);
           } catch {
             // ignore
           }
@@ -165,6 +182,8 @@ export function useAuditStream(): UseAuditStreamReturn {
     currentPass,
     status,
     error,
+    thinkingText,
+    thinkingPass,
     connect,
     disconnect,
   };

@@ -5,6 +5,7 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
+  --animate-rainbow-border: rainbow-border 3s linear infinite;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans:
@@ -191,6 +192,49 @@
     150% 150%,
     100% 100%;
   animation: ambient-shift 20s ease-in-out infinite alternate;
+}
+
+/* ==========================================================================
+   Rainbow border animation — used on assignment cards being actively audited
+   and on the active step circle in the audit pass stepper
+   ========================================================================== */
+
+@keyframes rainbow-border {
+  0%, 100% {
+    border-color: hsl(0 100% 60%);
+    box-shadow: 0 0 8px hsl(0 100% 60% / 0.4), 0 0 16px hsl(0 100% 60% / 0.15);
+  }
+  16.7% {
+    border-color: hsl(30 100% 60%);
+    box-shadow: 0 0 8px hsl(30 100% 60% / 0.4);
+  }
+  33.3% {
+    border-color: hsl(60 100% 55%);
+    box-shadow: 0 0 8px hsl(60 100% 55% / 0.4);
+  }
+  50% {
+    border-color: hsl(120 100% 45%);
+    box-shadow: 0 0 8px hsl(120 100% 45% / 0.4), 0 0 16px hsl(120 100% 45% / 0.15);
+  }
+  66.7% {
+    border-color: hsl(240 100% 65%);
+    box-shadow: 0 0 8px hsl(240 100% 65% / 0.4);
+  }
+  83.3% {
+    border-color: hsl(280 100% 60%);
+    box-shadow: 0 0 8px hsl(280 100% 60% / 0.4);
+  }
+}
+
+.animate-rainbow-border {
+  animation: rainbow-border 3s linear infinite;
+  border-width: 2px;
+  border-style: solid;
+}
+
+@keyframes shimmer-badge {
+  0%   { opacity: 0.7; }
+  100% { opacity: 1; background-color: oklch(0.45 0.15 280 / 0.3); }
 }
 
 @keyframes ambient-shift {

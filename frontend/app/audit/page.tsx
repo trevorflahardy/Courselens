@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { api } from "@/lib/api";
 import type { AuditRun, AuditRuntimeState, CourseNodeSummary } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
@@ -90,6 +90,7 @@ function StatusBadge({ status }: { status: AuditRun["status"] }) {
 
 export default function AuditPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
 
   // --- State ---
   const [nodes, setNodes] = useState<CourseNodeSummary[]>([]);
@@ -186,6 +187,19 @@ export default function AuditPage() {
       setAuditLoading(false);
     }
   }
+
+  // Auto-trigger Audit All when navigated from dashboard with ?start=all
+  const autoStartedRef = useRef(false);
+  useEffect(() => {
+    if (autoStartedRef.current) return;
+    if (searchParams.get("start") === "all" && !loading && !allLoading) {
+      autoStartedRef.current = true;
+      // Clear the param from the URL without a navigation
+      router.replace("/audit", { scroll: false });
+      void handleAuditAll();
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams, loading]);
 
   async function handleAuditAll() {
     setAllLoading(true);

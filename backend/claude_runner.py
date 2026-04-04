@@ -24,6 +24,9 @@ _PROJECT_ROOT = str(Path(__file__).parent.parent)
 logger = logging.getLogger(__name__)
 
 
+RATE_LIMIT_PATTERNS = ("429", "rate_limit", "ratelimit", "RateLimitError", "rate limit", "overloaded")
+
+
 @dataclass
 class RunState:
     run_id: str
@@ -33,6 +36,14 @@ class RunState:
     events: list[dict[str, object]] = field(default_factory=list)
     started_at: str = field(default_factory=lambda: datetime.now().isoformat())
     finished_at: str | None = None
+    # Rate-limit detection
+    rate_limited: bool = False
+    stderr_lines: list[str] = field(default_factory=list)
+    # Pass context — set by audit_engine after spawning, used to tag thinking events
+    current_pass: int = 0
+    # Thinking stream throttle state
+    _last_thinking_emit_time: float = field(default_factory=lambda: 0.0)
+    _thinking_char_buffer: int = 0
 
 
 # Active runs keyed by run_id
@@ -142,17 +153,17 @@ async def tail_run(run_id: str) -> AsyncGenerator[dict[str, object], None]:
             yield event
         return
 
-    # Drain stderr in the background so it never blocks stdout and logs in real time
-    stderr_lines: list[str] = []
-
+    # Drain stderr in background — detect rate-limit signals as they arrive
     async def _drain_stderr() -> None:
         if state.process is None or state.process.stderr is None:
             return
         async for raw in state.process.stderr:
             line = raw.decode().rstrip()
             if line:
-                stderr_lines.append(line)
+                state.stderr_lines.append(line)
                 logger.warning("Claude stderr [%s]: %s", run_id, line)
+                if any(p.lower() in line.lower() for p in RATE_LIMIT_PATTERNS):
+                    state.rate_limited = True
 
     stderr_task = asyncio.create_task(_drain_stderr())
 
@@ -162,6 +173,30 @@ async def tail_run(run_id: str) -> AsyncGenerator[dict[str, object], None]:
             continue
         try:
             event = json.loads(text)
+
+            # --- Thinking stream: capture text deltas and emit throttled thinking events ---
+            if (
+                event.get("type") == "content_block_delta"
+                and isinstance(event.get("delta"), dict)
+                and event["delta"].get("type") == "text_delta"
+            ):
+                text_chunk = str(event["delta"].get("text", ""))
+                if text_chunk:
+                    state._thinking_char_buffer += len(text_chunk)
+                    now = asyncio.get_event_loop().time()
+                    elapsed = now - state._last_thinking_emit_time
+                    if elapsed >= 0.2 or state._thinking_char_buffer >= 100:
+                        thinking_evt: dict[str, object] = {
+                            "type": "thinking",
+                            "text": text_chunk,
+                            "pass": state.current_pass,
+                        }
+                        state.events.append(thinking_evt)
+                        yield thinking_evt
+                        state._last_thinking_emit_time = now
+                        state._thinking_char_buffer = 0
+                continue  # don't forward raw content_block_delta upstream
+
             state.events.append(event)
             yield event
         except json.JSONDecodeError:
@@ -179,9 +214,10 @@ async def tail_run(run_id: str) -> AsyncGenerator[dict[str, object], None]:
         yield {"type": "done", "run_id": run_id}
     else:
         state.status = "error"
-        stderr_summary = " | ".join(stderr_lines[-10:]) if stderr_lines else "(no stderr)"
+        stderr_summary = " | ".join(state.stderr_lines[-10:]) if state.stderr_lines else "(no stderr)"
         yield {
             "type": "error",
+            "rate_limited": state.rate_limited,
             "message": f"Claude exited with code {return_code}: {stderr_summary[:500]}",
         }
 

@@ -89,16 +89,19 @@ CREATE INDEX IF NOT EXISTS idx_edges_status ON edges(status);
 
 -- Audit execution records (must precede findings due to FK)
 CREATE TABLE IF NOT EXISTS audit_runs (
-    id              TEXT PRIMARY KEY,
-    assignment_id   TEXT NOT NULL REFERENCES nodes(id),
-    status          TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','done','error')),
-    pass1_findings  INTEGER NOT NULL DEFAULT 0,
-    pass2_findings  INTEGER NOT NULL DEFAULT 0,
-    pass3_findings  INTEGER NOT NULL DEFAULT 0,
-    total_findings  INTEGER NOT NULL DEFAULT 0,
-    started_at      TEXT NOT NULL DEFAULT (datetime('now')),
-    finished_at     TEXT,
-    error_message   TEXT
+    id               TEXT PRIMARY KEY,
+    assignment_id    TEXT NOT NULL REFERENCES nodes(id),
+    status           TEXT NOT NULL DEFAULT 'running' CHECK(status IN ('running','done','error','paused')),
+    pass1_findings   INTEGER NOT NULL DEFAULT 0,
+    pass2_findings   INTEGER NOT NULL DEFAULT 0,
+    pass3_findings   INTEGER NOT NULL DEFAULT 0,
+    total_findings   INTEGER NOT NULL DEFAULT 0,
+    started_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    finished_at      TEXT,
+    error_message    TEXT,
+    completed_passes INTEGER NOT NULL DEFAULT 0,
+    paused_at        TEXT,
+    resume_reason    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_audit_runs_assignment ON audit_runs(assignment_id);
 CREATE INDEX IF NOT EXISTS idx_audit_runs_status ON audit_runs(status);

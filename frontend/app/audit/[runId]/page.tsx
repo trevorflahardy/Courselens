@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { api } from "@/lib/api";
@@ -17,6 +17,7 @@ import {
   Loader2Icon,
   QuoteIcon,
   SquareIcon,
+  PlayIcon,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -102,9 +103,9 @@ function StepCircle({ state }: { state: PassState }) {
     case "active":
       return (
         <div className="relative flex items-center justify-center">
-          {/* Pulsing ring */}
-          <span className="absolute inline-flex h-7 w-7 animate-ping rounded-full bg-purple-500/20" />
-          <span className="absolute inline-flex h-6 w-6 rounded-full border-2 border-purple-500/40" />
+          {/* Rainbow pulsing ring */}
+          <span className="absolute inline-flex h-8 w-8 rounded-full animate-rainbow-border" />
+          <span className="absolute inline-flex h-6 w-6 animate-ping rounded-full bg-purple-500/20" />
           <CircleDotIcon className="relative size-6 text-purple-400" />
         </div>
       );
@@ -115,6 +116,43 @@ function StepCircle({ state }: { state: PassState }) {
         </div>
       );
   }
+}
+
+// ---------------------------------------------------------------------------
+// Thinking panel — shows Claude's streaming response text during an active pass
+// ---------------------------------------------------------------------------
+
+function ThinkingPanel({
+  text,
+  pass,
+  isVisible,
+}: {
+  text: string;
+  pass: number;
+  isVisible: boolean;
+}) {
+  const bottomRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [text]);
+
+  if (!isVisible || !text) return null;
+
+  return (
+    <div className="glass rounded-lg border border-purple-500/20 overflow-hidden">
+      <div className="flex items-center gap-2 px-3 py-2 border-b border-purple-500/15 bg-purple-500/5">
+        <Loader2Icon className="size-3 animate-spin text-purple-400" />
+        <span className="text-[11px] font-medium text-purple-300 uppercase tracking-wider">
+          Claude thinking — pass {pass}
+        </span>
+      </div>
+      <div className="max-h-48 overflow-y-auto px-3 py-2 font-mono text-[11px] text-muted-foreground leading-relaxed whitespace-pre-wrap">
+        {text}
+        <div ref={bottomRef} />
+      </div>
+    </div>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -180,6 +218,7 @@ function FindingCard({
 function getStatusMessage(currentPass: number, status: string): string {
   if (status === "done") return "Audit complete";
   if (status === "error") return "Audit encountered an error";
+  if (status === "paused") return "Audit paused — rate limited";
   if (status === "connecting") return "Connecting to audit stream...";
   switch (currentPass) {
     case 1:
@@ -205,6 +244,7 @@ export default function AuditRunDetailPage() {
   const [dbFindings, setDbFindings] = useState<Finding[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [canceling, setCanceling] = useState(false);
+  const [resuming, setResuming] = useState(false);
 
   const stream = useAuditStream();
 
@@ -265,6 +305,20 @@ export default function AuditRunDetailPage() {
       setCanceling(false);
     }
   }, [run, stream, fetchRun]);
+
+  const handleResumeRun = useCallback(async () => {
+    if (!run || run.status !== "paused") return;
+    setResuming(true);
+    try {
+      await api.resumeAuditRun(run.id);
+      stream.connect(runId);
+      await fetchRun();
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : "Failed to resume run");
+    } finally {
+      setResuming(false);
+    }
+  }, [run, stream, runId, fetchRun]);
 
   // Determine which findings to show
   const isFinished = run?.status === "done" || run?.status === "error";
@@ -354,6 +408,25 @@ export default function AuditRunDetailPage() {
                 <span className="ml-1">Stop Audit</span>
               </Button>
             )}
+            {run.status === "paused" && (
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={resuming}
+                onClick={() => {
+                  void handleResumeRun();
+                }}
+              >
+                {resuming ? (
+                  <Loader2Icon className="size-3.5 animate-spin" />
+                ) : (
+                  <PlayIcon className="size-3.5" />
+                )}
+                <span className="ml-1">
+                  Resume (pass {(run.completed_passes ?? 0) + 1} of 3)
+                </span>
+              </Button>
+            )}
           </div>
         )}
       </div>
@@ -363,6 +436,13 @@ export default function AuditRunDetailPage() {
         currentPass={effectivePass}
         isDone={effectiveStatus === "done"}
         findingsPerPass={findingsPerPass}
+      />
+
+      {/* Claude thinking stream — visible only during live audit */}
+      <ThinkingPanel
+        text={stream.thinkingText}
+        pass={stream.thinkingPass}
+        isVisible={isLive}
       />
 
       {/* Error from SSE */}
@@ -477,6 +557,12 @@ function RunStatusBadge({ status }: { status: AuditRun["status"] }) {
       return (
         <Badge className="border border-red-500/25 bg-red-500/15 text-red-400">
           Error
+        </Badge>
+      );
+    case "paused":
+      return (
+        <Badge className="border border-yellow-500/25 bg-yellow-500/15 text-yellow-400">
+          Paused
         </Badge>
       );
   }

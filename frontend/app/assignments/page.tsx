@@ -4,6 +4,7 @@ import { useEffect, useState, useMemo, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import type { CourseNodeSummary, NodeLink, NodeType, NodeStatus } from "@/lib/types";
+import { useAuditState } from "@/hooks/useAuditState";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -194,6 +195,7 @@ interface GroupedNodes {
 
 export default function AssignmentsPage() {
   const router = useRouter();
+  const auditState = useAuditState();
   const [nodes, setNodes] = useState<CourseNodeSummary[]>([]);
   const [nodeLinks, setNodeLinks] = useState<NodeLink[]>([]);
   const [loading, setLoading] = useState(true);
@@ -762,6 +764,7 @@ export default function AssignmentsPage() {
               onCardDragEnd={handleDragEnd}
               onCardDragEnter={handleDragTargetEnter}
               onCardDrop={handleDropLink}
+              runningAssignmentIds={auditState.running_assignment_ids}
             />
           ))}
         </div>
@@ -891,6 +894,7 @@ function WeekGroup({
   onCardDragEnd,
   onCardDragEnter,
   onCardDrop,
+  runningAssignmentIds,
 }: {
   week: number | null;
   module: string | null;
@@ -903,6 +907,7 @@ function WeekGroup({
   onCardDragEnd: () => void;
   onCardDragEnter: (node: CourseNodeSummary) => void;
   onCardDrop: (node: CourseNodeSummary) => void;
+  runningAssignmentIds: string[];
 }) {
   return (
     <div className="space-y-3">
@@ -939,10 +944,22 @@ function WeekGroup({
             onDragEnd={onCardDragEnd}
               onDragEnter={!item.isLinkedReference ? () => onCardDragEnter(item.node) : undefined}
               onDropLink={!item.isLinkedReference ? () => onCardDrop(item.node) : undefined}
+            isAuditing={runningAssignmentIds.includes(item.node.id)}
           />
         ))}
       </div>
     </div>
+  );
+}
+
+function AIBadge() {
+  return (
+    <span
+      className="absolute top-2 right-2 z-10 inline-flex items-center gap-0.5 rounded-full border border-purple-400/40 bg-purple-500/15 px-1.5 py-0.5 text-[9px] font-semibold text-purple-300 tracking-wide pointer-events-none"
+      style={{ animation: "shimmer-badge 2s ease-in-out infinite alternate" }}
+    >
+      AI ✦
+    </span>
   );
 }
 
@@ -960,6 +977,7 @@ function AssignmentCard({
   onDragEnd,
   onDragEnter,
   onDropLink,
+  isAuditing,
 }: {
   node: CourseNodeSummary;
   moduleLabel: string | null;
@@ -974,8 +992,9 @@ function AssignmentCard({
   onDragEnd: () => void;
   onDragEnter?: () => void;
   onDropLink?: () => void;
+  isAuditing?: boolean;
 }) {
-  return (
+  const cardInner = (
     <div
       role="button"
       tabIndex={0}
@@ -1010,9 +1029,12 @@ function AssignmentCard({
       className={`group cursor-pointer rounded-xl border p-4 text-left backdrop-blur-sm transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70 ${
         isLinkedReference
           ? "border-white/16 bg-secondary/18 opacity-80 hover:border-white/28 hover:bg-secondary/24"
-          : "border-secondary/55 bg-secondary/28 hover:-translate-y-px hover:border-secondary/75 hover:bg-secondary/38"
+          : isAuditing
+            ? "border-transparent bg-secondary/28 hover:bg-secondary/38"
+            : "border-secondary/55 bg-secondary/28 hover:-translate-y-px hover:border-secondary/75 hover:bg-secondary/38"
       } ${isDragSource ? "cursor-grab active:cursor-grabbing" : ""} ${isDragActive ? "ring-2 ring-primary/50" : ""} ${isDropTarget ? "ring-2 ring-emerald-400/70 border-emerald-300/60 bg-emerald-500/10" : ""}`}
     >
+      {isAuditing && <AIBadge />}
       <div className="flex items-start gap-3">
         {/* Type icon */}
         <div className={`mt-0.5 rounded-lg border p-2 text-muted-foreground transition-colors group-hover:text-foreground/80 ${
@@ -1096,4 +1118,10 @@ function AssignmentCard({
       </div>
     </div>
   );
+
+  return isAuditing ? (
+    <div className="animate-rainbow-border rounded-xl p-[2px] relative">
+      {cardInner}
+    </div>
+  ) : cardInner;
 }

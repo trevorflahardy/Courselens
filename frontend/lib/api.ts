@@ -94,6 +94,9 @@ export const api = {
   cancelAuditRun: (runId: string) =>
     request<AuditRun>(`/api/audit/runs/${runId}/cancel`, { method: "POST" }),
 
+  resumeAuditRun: (runId: string) =>
+    request<AuditRun>(`/api/audit/runs/${runId}/resume`, { method: "POST" }),
+
   startAuditAll: (batchSize = 4) =>
     request<{ total: number; completed: number; errors: string[] }>(
       `/api/audit/all?batch_size=${batchSize}`,
