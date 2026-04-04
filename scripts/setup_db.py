@@ -130,6 +130,24 @@ CREATE INDEX IF NOT EXISTS idx_findings_severity ON findings(severity);
 CREATE INDEX IF NOT EXISTS idx_findings_run ON findings(audit_run_id);
 CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status);
 
+-- AI-generated text fix suggestions for qualifying findings (clarity, format_mismatch)
+CREATE TABLE IF NOT EXISTS suggestions (
+    id              TEXT PRIMARY KEY,
+    finding_id      TEXT NOT NULL REFERENCES findings(id),
+    node_id         TEXT NOT NULL REFERENCES nodes(id),
+    field           TEXT NOT NULL,           -- e.g. "description", "title"
+    original_text   TEXT NOT NULL,
+    suggested_text  TEXT NOT NULL,
+    diff_patch      TEXT NOT NULL,           -- unified diff string
+    status          TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending','approved','denied','ignored')),
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    resolved_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_suggestions_finding ON suggestions(finding_id);
+CREATE INDEX IF NOT EXISTS idx_suggestions_node    ON suggestions(node_id);
+CREATE INDEX IF NOT EXISTS idx_suggestions_status  ON suggestions(status);
+
 -- Ingestion event log
 CREATE TABLE IF NOT EXISTS ingest_log (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,

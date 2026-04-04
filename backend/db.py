@@ -30,7 +30,7 @@ async def close_db() -> None:
 
 
 async def init_db() -> None:
-    """Initialize the database — run schema if tables don't exist."""
+    """Initialize the database — run schema if tables don't exist, then run migrations."""
     db = await get_db()
     cursor = await db.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='nodes'"
@@ -42,4 +42,29 @@ async def init_db() -> None:
         setup.setup_database()
         # Reconnect after schema creation
         await close_db()
-        await get_db()
+        db = await get_db()
+
+    # Idempotent migration: add suggestions table if missing
+    cursor = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='suggestions'"
+    )
+    if await cursor.fetchone() is None:
+        await db.executescript("""
+            CREATE TABLE IF NOT EXISTS suggestions (
+                id              TEXT PRIMARY KEY,
+                finding_id      TEXT NOT NULL REFERENCES findings(id),
+                node_id         TEXT NOT NULL REFERENCES nodes(id),
+                field           TEXT NOT NULL,
+                original_text   TEXT NOT NULL,
+                suggested_text  TEXT NOT NULL,
+                diff_patch      TEXT NOT NULL,
+                status          TEXT NOT NULL DEFAULT 'pending'
+                                CHECK(status IN ('pending','approved','denied','ignored')),
+                created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                resolved_at     TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_suggestions_finding ON suggestions(finding_id);
+            CREATE INDEX IF NOT EXISTS idx_suggestions_node    ON suggestions(node_id);
+            CREATE INDEX IF NOT EXISTS idx_suggestions_status  ON suggestions(status);
+        """)
+        await db.commit()

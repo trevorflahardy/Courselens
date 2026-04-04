@@ -1,9 +1,11 @@
 """Audit MCP Server — exposes course audit tools via FastMCP.
 
-Three namespaces mounted into a single composite server:
+Two namespaces mounted into a single composite server:
   - nodes: Course node CRUD (read, write/upsert, list, read_many, link, get_stale)
-  - graph: Dependency graph (add_edge, get_neighbors, get_flags, mark_stale)
   - emit:  Finding emission (emit_finding, emit_resolve_stale)
+
+Graph logic lives in backend/services/graph_service.py and is called
+internally by FastAPI routes and the audit engine — not exposed as MCP tools.
 
 Run standalone:  python -m audit_mcp.audit_mcp
 Or mount into Claude Code via settings.json.
@@ -24,8 +26,7 @@ if _project_root not in sys.path:
 
 from backend.db import init_db  # noqa: E402
 from backend.models.finding import FindingCreate, FindingSeverity, FindingType  # noqa: E402
-from backend.models.graph import EdgeType  # noqa: E402
-from backend.services import finding_service, graph_service, node_service  # noqa: E402
+from backend.services import finding_service, node_service  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Namespace: nodes
@@ -128,64 +129,6 @@ async def nodes_get_stale() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Namespace: graph
-# ---------------------------------------------------------------------------
-graph_mcp = FastMCP("audit-graph")
-
-
-@graph_mcp.tool()
-async def graph_add_edge(
-    source: str,
-    target: str,
-    edge_type: str,
-    label: str | None = None,
-    evidence: str | None = None,
-    confidence: float | None = None,
-) -> str:
-    """Add a dependency edge between two nodes."""
-    await _ensure_db()
-    edge = await graph_service.add_edge(
-        source=source,
-        target=target,
-        edge_type=EdgeType(edge_type),
-        label=label,
-        evidence=evidence,
-        confidence=confidence,
-    )
-    return edge.model_dump_json()
-
-
-@graph_mcp.tool()
-async def graph_get_neighbors(node_id: str) -> str:
-    """Get upstream (incoming) and downstream (outgoing) edges for a node."""
-    await _ensure_db()
-    neighbors = await graph_service.get_neighbors(node_id)
-    return json.dumps(
-        {
-            "upstream": [e.model_dump() for e in neighbors["upstream"]],
-            "downstream": [e.model_dump() for e in neighbors["downstream"]],
-        },
-        default=str,
-    )
-
-
-@graph_mcp.tool()
-async def graph_get_flags() -> str:
-    """Get all nodes with gap or orphan status."""
-    await _ensure_db()
-    flags = await graph_service.get_flags()
-    return json.dumps(flags, default=str)
-
-
-@graph_mcp.tool()
-async def graph_mark_stale(node_id: str) -> str:
-    """Mark all edges from/to a node as stale for re-derivation."""
-    await _ensure_db()
-    count = await graph_service.mark_stale(node_id)
-    return json.dumps({"node_id": node_id, "edges_marked_stale": count})
-
-
-# ---------------------------------------------------------------------------
 # Namespace: emit
 # ---------------------------------------------------------------------------
 emit_mcp = FastMCP("audit-emit")
@@ -233,7 +176,6 @@ async def emit_resolve_stale(assignment_id: str) -> str:
 # ---------------------------------------------------------------------------
 mcp = FastMCP("course-audit")
 mcp.mount(nodes_mcp, namespace="nodes")
-mcp.mount(graph_mcp, namespace="graph")
 mcp.mount(emit_mcp, namespace="emit")
 
 # DB initialization flag

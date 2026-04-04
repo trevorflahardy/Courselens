@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
+from pydantic import BaseModel
 
 from backend.services.ingest.canvas_zip import ingest_zip as do_ingest_zip
 from backend.services.ingest.graph_builder import rebuild_graph
@@ -74,6 +75,53 @@ async def ingest_zip(
                 logger.warning("Failed to remove temporary uploaded ZIP: %s", temp_zip)
 
 
+class CourseIngestRequest(BaseModel):
+    course_id: str | None = None
+
+
+@router.get("/courses")
+async def list_canvas_courses() -> list[dict[str, object]]:
+    """List Canvas courses the configured token has teacher/TA access to."""
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    from backend.config import settings
+
+    if not settings.canvas_api_url or not settings.canvas_api_token:
+        raise HTTPException(
+            status_code=400,
+            detail="CANVAS_API_URL and CANVAS_API_TOKEN must be set in .env",
+        )
+
+    base = settings.canvas_api_url.rstrip("/")
+    headers = {"Authorization": f"Bearer {settings.canvas_api_token}"}
+    url = f"{base}/courses?enrollment_type=teacher&per_page=50&state[]=available"
+
+    def _get() -> object:
+        req = urllib.request.Request(url, headers=headers)
+        try:
+            with urllib.request.urlopen(req) as r:
+                return _json.load(r)
+        except urllib.error.HTTPError as exc:
+            raise HTTPException(status_code=exc.code, detail=f"Canvas API error: {exc.reason}") from exc
+
+    data = await asyncio.to_thread(_get)
+    if not isinstance(data, list):
+        raise HTTPException(status_code=502, detail="Unexpected response from Canvas API")
+
+    return [
+        {
+            "id": str(c.get("id", "")),
+            "name": c.get("name", ""),
+            "course_code": c.get("course_code", ""),
+            "term": c.get("enrollment_term_id"),
+        }
+        for c in data
+        if c.get("id")
+    ]
+
+
 @router.post("/rebuild-graph")
 async def api_rebuild_graph() -> dict[str, object]:
     """Rebuild the dependency graph from current node data."""
@@ -86,9 +134,20 @@ async def api_rebuild_graph() -> dict[str, object]:
 
 
 @router.post("/course")
-async def ingest_course() -> dict[str, str]:
-    """Trigger Canvas live sync (pure Python via canvasapi). Poll /status for progress."""
+async def ingest_course(body: CourseIngestRequest | None = None) -> dict[str, str]:
+    """Trigger Canvas live sync (pure Python via canvasapi). Poll /status for progress.
+
+    Optionally pass `course_id` in the request body to override the env-configured value.
+    """
     global _ingest_status
+    from backend.config import settings
+
+    course_id = (body.course_id if body else None) or settings.canvas_course_id
+    if not course_id:
+        raise HTTPException(
+            status_code=400,
+            detail="course_id must be provided in the request body or set via CANVAS_COURSE_ID env var",
+        )
 
     if _ingest_status.get("status") == "running":
         return {"status": "already_running"}
@@ -99,26 +158,16 @@ async def ingest_course() -> dict[str, str]:
         "message": "Canvas sync starting...",
         "feed": [],
     }
-    asyncio.create_task(_run_python_canvas_sync())
+    asyncio.create_task(_run_python_canvas_sync(course_id=course_id))
     return {"status": "started"}
 
 
-async def _run_python_canvas_sync() -> None:
+async def _run_python_canvas_sync(course_id: str) -> None:
     """Background task: pure-Python Canvas sync using canvasapi library."""
     global _ingest_status
     from backend.config import settings
     from backend.db import get_db
     from backend.services.ingest.canvas_sync import run_full_sync
-
-    course_id = settings.canvas_course_id
-    if not course_id:
-        logger.error("Canvas sync aborted: canvas_course_id is not set in .env")
-        _ingest_status = {
-            "status": "error",
-            "stage": "error",
-            "message": "canvas_course_id not set in .env",
-        }
-        return
 
     if not settings.canvas_api_token:
         logger.error("Canvas sync aborted: canvas_api_token is not set in .env")

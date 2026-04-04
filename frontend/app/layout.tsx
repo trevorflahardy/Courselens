@@ -23,8 +23,8 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "Course Audit — EGN 3000L",
-  description: "AI-powered course audit system for Foundations of Engineering Lab",
+  title: "Course Audit",
+  description: "AI-powered course audit system",
 };
 
 export default function RootLayout({

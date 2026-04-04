@@ -53,8 +53,9 @@ tests/            pytest (backend), vitest (frontend), playwright (e2e)
 
 ### Audit MCP (`audit_mcp/audit_mcp.py`)
 - `nodes_*` — Course node CRUD (read, write/upsert, list, read_many, link, get_stale)
-- `graph_*` — Dependency graph (add_edge, get_neighbors, get_flags, mark_stale)
 - `emit_*` — Finding emission (emit_finding, emit_resolve_stale)
+
+> Graph logic lives in `backend/services/graph_service.py` — called internally by FastAPI routes and the audit engine, not exposed as MCP tools.
 
 ### Canvas MCP (external)
 - Use `get_course_structure` as entry point for ingestion

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import datetime
 
 from backend.db import get_db
-from backend.models.finding import Finding, FindingCreate, FindingStatus
+from backend.models.finding import Finding, FindingCreate, FindingStatus, FindingType
 from backend.services.node_service import get_node
+
+_SUGGESTION_QUALIFYING_TYPES = {FindingType.CLARITY, FindingType.FORMAT_MISMATCH}
 
 
 async def create_finding(data: FindingCreate) -> Finding:
@@ -43,7 +46,16 @@ async def create_finding(data: FindingCreate) -> Finding:
         (data.assignment_id, data.assignment_id),
     )
     await db.commit()
-    return (await get_finding(finding_id))  # type: ignore[return-value]
+    finding = await get_finding(finding_id)
+    if finding is None:
+        raise RuntimeError(f"Failed to retrieve just-created finding {finding_id}")
+
+    # Fire-and-forget: generate AI suggestion for qualifying finding types
+    if data.finding_type in _SUGGESTION_QUALIFYING_TYPES:
+        from backend.services.suggestion_service import generate_suggestion_for_finding
+        asyncio.create_task(generate_suggestion_for_finding(finding))
+
+    return finding
 
 
 async def get_finding(finding_id: str) -> Finding | None:

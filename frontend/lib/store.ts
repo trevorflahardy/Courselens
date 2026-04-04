@@ -28,6 +28,11 @@ interface AuditStore {
   // UI state
   selectedNodeId: string | null;
   setSelectedNodeId: (id: string | null) => void;
+
+  // Course selection
+  selectedCourseId: string | null;
+  selectedCourseName: string | null;
+  setSelectedCourse: (id: string, name: string) => void;
 }
 
 export const useAuditStore = create<AuditStore>((set, get) => ({
@@ -120,4 +125,17 @@ export const useAuditStore = create<AuditStore>((set, get) => ({
   // UI state
   selectedNodeId: null,
   setSelectedNodeId: (id) => set({ selectedNodeId: id }),
+
+  // Course selection — persisted to localStorage via side-effect in CourseSelector
+  selectedCourseId:
+    typeof window !== "undefined" ? localStorage.getItem("selectedCourseId") : null,
+  selectedCourseName:
+    typeof window !== "undefined" ? localStorage.getItem("selectedCourseName") : null,
+  setSelectedCourse: (id, name) => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("selectedCourseId", id);
+      localStorage.setItem("selectedCourseName", name);
+    }
+    set({ selectedCourseId: id, selectedCourseName: name });
+  },
 }));

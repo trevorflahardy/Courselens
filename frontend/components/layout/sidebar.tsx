@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useAuditStore } from "@/lib/store";
 
 const navItems = [
   {
@@ -49,7 +50,25 @@ const navItems = [
       </svg>
     ),
   },
+  {
+    label: "Suggestions",
+    href: "/suggestions",
+    icon: (
+      <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125" />
+      </svg>
+    ),
+  },
 ];
+
+function CourseName() {
+  const { selectedCourseName } = useAuditStore();
+  return (
+    <p className="text-[11px] text-muted-foreground/70 leading-none mt-1 truncate max-w-[120px]">
+      {selectedCourseName ?? "No course selected"}
+    </p>
+  );
+}
 
 export function Sidebar() {
   const pathname = usePathname();
@@ -65,7 +84,7 @@ export function Sidebar() {
         </div>
         <div>
           <h1 className="text-sm font-bold tracking-tight leading-none">Course Audit</h1>
-          <p className="text-[11px] text-muted-foreground/70 leading-none mt-1">EGN 3000L</p>
+          <CourseName />
         </div>
       </div>
 

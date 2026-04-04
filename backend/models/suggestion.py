@@ -1,0 +1,39 @@
+"""Pydantic models for AI-generated fix suggestions."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from enum import StrEnum
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class SuggestionStatus(StrEnum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    DENIED = "denied"
+    IGNORED = "ignored"
+
+
+class Suggestion(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    id: str
+    finding_id: str
+    node_id: str
+    field: str
+    original_text: str
+    suggested_text: str
+    diff_patch: str
+    status: SuggestionStatus = SuggestionStatus.PENDING
+    created_at: datetime = Field(default_factory=datetime.now)
+    resolved_at: datetime | None = None
+
+
+class SuggestionCreate(BaseModel):
+    finding_id: str
+    node_id: str
+    field: str
+    original_text: str
+    suggested_text: str
+    diff_patch: str

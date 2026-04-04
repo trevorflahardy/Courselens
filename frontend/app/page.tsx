@@ -123,6 +123,30 @@ const quickActions = [
 /*  Dashboard page                                                            */
 /* -------------------------------------------------------------------------- */
 
+function CourseInfoPanel() {
+  const { selectedCourseId, selectedCourseName, stats } = useAuditStore();
+  const items = [
+    { label: "Course", value: selectedCourseName ?? "—" },
+    { label: "Nodes", value: stats ? `${stats.total_nodes ?? 0} nodes` : "—" },
+    { label: "Findings", value: stats ? `${stats.total_findings ?? 0} active` : "—" },
+    { label: "Canvas ID", value: selectedCourseId ?? "—", mono: true },
+  ];
+  return (
+    <div className="grid grid-cols-4 gap-8">
+      {items.map((item) => (
+        <div key={item.label}>
+          <p className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-widest">
+            {item.label}
+          </p>
+          <p className={`text-[13px] font-medium mt-1.5 ${item.mono ? "font-mono text-primary/80" : ""}`}>
+            {item.value}
+          </p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function DashboardPage() {
   const { stats, findings, loading, errors, fetchStats, fetchFindings } = useAuditStore();
 
@@ -254,27 +278,7 @@ export default function DashboardPage() {
           <h3 className="text-sm font-bold">Course Info</h3>
         </div>
         <div className="px-5 pb-5">
-          <div className="grid grid-cols-4 gap-8">
-            {[
-              { label: "Course", value: "EGN 3000L — Foundations of Engineering Lab" },
-              { label: "Term", value: "Spring 2026" },
-              { label: "Modules", value: "21 modules, 107 items" },
-              { label: "Canvas ID", value: "2018858", mono: true },
-            ].map((item) => (
-              <div key={item.label}>
-                <p className="text-[10px] font-semibold text-muted-foreground/50 uppercase tracking-widest">
-                  {item.label}
-                </p>
-                <p
-                  className={`text-[13px] font-medium mt-1.5 ${
-                    item.mono ? "font-mono text-primary/80" : ""
-                  }`}
-                >
-                  {item.value}
-                </p>
-              </div>
-            ))}
-          </div>
+          <CourseInfoPanel />
         </div>
       </div>
     </div>

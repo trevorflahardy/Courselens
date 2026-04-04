@@ -10,7 +10,7 @@ class Settings(BaseSettings):
 
     # Canvas
     canvas_course_id: str = ""
-    canvas_api_url: str = "https://usflearn.instructure.com/api/v1"
+    canvas_api_url: str = ""
     canvas_api_token: str = ""
 
     # Paths

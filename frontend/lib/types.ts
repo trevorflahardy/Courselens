@@ -113,6 +113,23 @@ export interface Finding {
   resolved_at: string | null;
 }
 
+// --- Suggestion Models ---
+
+export type SuggestionStatus = "pending" | "approved" | "denied" | "ignored";
+
+export interface Suggestion {
+  id: string;
+  finding_id: string;
+  node_id: string;
+  field: string;
+  original_text: string;
+  suggested_text: string;
+  diff_patch: string;
+  status: SuggestionStatus;
+  created_at: string;
+  resolved_at: string | null;
+}
+
 // --- Graph Models ---
 
 export interface GraphEdge {

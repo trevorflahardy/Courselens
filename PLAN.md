@@ -496,7 +496,7 @@ These changes must be applied to `backend/models/`, `backend/services/`, `script
 | 7.1 | Configure Canvas MCP with real credentials | Set `CANVAS_API_TOKEN`, `CANVAS_BASE_URL`, `CANVAS_COURSE_ID`                |
 | 7.2 | Run full ingestion on real course          | `/ingest-course` → `/embed-all` → `/rebuild-graph`                           |
 | 7.3 | Run full audit on real course              | `/audit-all` → review findings for quality                                   |
-| 7.4 | Tune audit prompts for EGN 3000L           | Adjust based on real findings — domain-specific terminology, rubric patterns |
+| 7.4 | Tune audit prompts for selected course     | Adjust based on real findings — domain-specific terminology, rubric patterns |
 | 7.5 | Create user guide                          | How to run audits, interpret findings, use the graph, fix-reaudit workflow   |
 | 7.6 | Final demo walkthrough                     | Walk through entire system with Trevor                                       |
 

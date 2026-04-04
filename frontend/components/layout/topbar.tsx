@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
+import { api } from "@/lib/api";
+import { useAuditStore } from "@/lib/store";
 
 const routeTitles: Record<string, string> = {
   "/": "Dashboard",
@@ -9,6 +11,7 @@ const routeTitles: Record<string, string> = {
   "/graph": "Dependency Graph",
   "/audit": "Audit",
   "/ingest": "Ingestion",
+  "/suggestions": "Suggestions",
 };
 
 function getBreadcrumb(pathname: string): { title: string; parent?: string } {
@@ -22,6 +25,45 @@ function getBreadcrumb(pathname: string): { title: string; parent?: string } {
     return { title: "Live Audit", parent: "Audit" };
   }
   return { title: "Course Audit" };
+}
+
+function CourseSelector() {
+  const { selectedCourseId, setSelectedCourse } = useAuditStore();
+  const [courses, setCourses] = useState<{ id: string; name: string; course_code: string }[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [unconfigured, setUnconfigured] = useState(false);
+
+  useEffect(() => {
+    api.listCourses()
+      .then(setCourses)
+      .catch(() => setUnconfigured(true))
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading) return null;
+  if (unconfigured) {
+    return (
+      <span className="text-[11px] text-muted-foreground/40 px-2">Canvas not configured</span>
+    );
+  }
+
+  return (
+    <select
+      value={selectedCourseId ?? ""}
+      onChange={(e) => {
+        const course = courses.find((c) => c.id === e.target.value);
+        if (course) setSelectedCourse(course.id, course.name);
+      }}
+      className="rounded-lg border border-[oklch(0.35_0.03_270_/_0.3)] bg-[oklch(0.18_0.015_270_/_0.4)] px-2.5 py-1 text-[12px] text-muted-foreground/70 hover:text-foreground transition-all duration-200 cursor-pointer focus:outline-none"
+    >
+      <option value="" disabled>Select a course...</option>
+      {courses.map((c) => (
+        <option key={c.id} value={c.id}>
+          {c.course_code ? `${c.course_code} — ` : ""}{c.name}
+        </option>
+      ))}
+    </select>
+  );
 }
 
 export function TopBar() {
@@ -50,6 +92,7 @@ export function TopBar() {
 
       {/* Quick actions */}
       <div className="flex items-center gap-2">
+        {mounted ? <CourseSelector /> : null}
         {mounted ? (
           <button className="flex items-center gap-1.5 rounded-lg border border-[oklch(0.35_0.03_270_/_0.3)] bg-[oklch(0.18_0.015_270_/_0.4)] px-2.5 py-1 text-[12px] font-medium text-muted-foreground/70 hover:text-foreground hover:bg-[oklch(0.22_0.02_270_/_0.5)] hover:border-[oklch(0.45_0.06_270_/_0.3)] transition-all duration-200">
             <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">

@@ -14,6 +14,7 @@ import {
   Link2,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { useAuditStore } from "@/lib/store";
 import type { CourseNodeSummary } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -278,6 +279,8 @@ function RelinkContentButton({ onDone }: { onDone: () => Promise<void> }) {
 /* -------------------------------------------------------------------------- */
 
 export default function IngestPage() {
+  const { selectedCourseId } = useAuditStore();
+
   /* ---- shared state ---- */
   const [lastRun, setLastRun] = useState<string | null>(null);
   const [log, setLog] = useState<IngestLogEntry[]>([]);
@@ -424,7 +427,7 @@ export default function IngestPage() {
     setSyncError(null);
     setSyncFeed([]);
     try {
-      await api.startIngest();
+      await api.startIngest(selectedCourseId ?? undefined);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Failed to start Canvas sync";
       console.error("[Canvas sync] POST /api/ingest/course failed:", msg);

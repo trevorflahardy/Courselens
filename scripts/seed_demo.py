@@ -1,6 +1,6 @@
 """Seed demo data for the Course Audit System.
 
-Creates realistic EGN 3000L course content:
+Creates realistic demo course content:
 - 15 assignments across 15 weeks
 - 3 pages (syllabus, resources, peer review guide)
 - 2 rubrics (structured criteria)
@@ -342,7 +342,7 @@ def seed() -> None:
             "week": 1,
             "module": "Module 1: Foundations",
             "module_order": 0,
-            "description": "EGN 3000L Foundations of Engineering Lab — Fall 2025. This course introduces the engineering design process through a semester-long team project.",
+            "description": "SAMPLE-101 Introduction to Engineering — Demo. This course introduces the engineering design process through a semester-long team project.",
         },
         {
             "id": "page-resources",

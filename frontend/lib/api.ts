@@ -33,6 +33,7 @@ import type {
   AuditRuntimeState,
   DashboardStats,
   Rubric,
+  Suggestion,
 } from "./types";
 
 export const api = {
@@ -106,7 +107,16 @@ export const api = {
   getStats: () => request<DashboardStats>("/api/stats"),
 
   // Ingest
-  startIngest: () => request<{ status: string }>("/api/ingest/course", { method: "POST" }),
+  listCourses: () =>
+    request<{ id: string; name: string; course_code: string; term: number | null }[]>(
+      "/api/ingest/courses",
+    ),
+
+  startIngest: (courseId?: string) =>
+    request<{ status: string }>("/api/ingest/course", {
+      method: "POST",
+      body: courseId ? JSON.stringify({ course_id: courseId }) : undefined,
+    }),
 
   uploadZip: (file: File) => {
     const form = new FormData();
@@ -154,6 +164,25 @@ export const api = {
       already_linked: number;
       missing_rubric_nodes: { assignment_id: string; rubric_id: string }[];
     }>("/api/ingest/link-rubrics", { method: "POST" }),
+
+  // Suggestions
+  listSuggestions: (params?: { finding_id?: string; node_id?: string; status?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.finding_id) qs.set("finding_id", params.finding_id);
+    if (params?.node_id) qs.set("node_id", params.node_id);
+    if (params?.status) qs.set("status", params.status);
+    const query = qs.toString();
+    return request<Suggestion[]>(`/api/suggestions${query ? `?${query}` : ""}`);
+  },
+
+  approveSuggestion: (id: string) =>
+    request<Suggestion>(`/api/suggestions/${id}/approve`, { method: "POST" }),
+
+  denySuggestion: (id: string) =>
+    request<Suggestion>(`/api/suggestions/${id}/deny`, { method: "POST" }),
+
+  ignoreSuggestion: (id: string) =>
+    request<Suggestion>(`/api/suggestions/${id}/ignore`, { method: "POST" }),
 
   cleanupTestData: () =>
     request<{
