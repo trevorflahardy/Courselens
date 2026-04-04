@@ -12,6 +12,23 @@ from backend.services.node_service import get_node
 
 _SUGGESTION_QUALIFYING_TYPES = {FindingType.CLARITY, FindingType.FORMAT_MISMATCH}
 
+async def _refresh_node_status(assignment_id: str) -> None:
+    """Set nodes.status to the worst active finding severity, or 'ok' if audited-clean."""
+    db = await get_db()
+    await db.execute(
+        """UPDATE nodes SET status = (
+            SELECT CASE
+                WHEN SUM(CASE WHEN severity = 'gap'  THEN 1 ELSE 0 END) > 0 THEN 'gap'
+                WHEN SUM(CASE WHEN severity = 'warn' THEN 1 ELSE 0 END) > 0 THEN 'warn'
+                WHEN SUM(CASE WHEN severity = 'info' THEN 1 ELSE 0 END) > 0 THEN 'info'
+                WHEN COUNT(*) > 0 THEN 'ok'
+                ELSE status  -- preserve 'ok' set by audit completion; don't revert to unaudited
+            END
+            FROM findings WHERE assignment_id = ? AND status = 'active'
+        ) WHERE id = ?""",
+        (assignment_id, assignment_id),
+    )
+
 
 async def create_finding(data: FindingCreate) -> Finding:
     """Create a new finding, recording the node's current content_hash."""
@@ -37,7 +54,7 @@ async def create_finding(data: FindingCreate) -> Finding:
         ),
     )
 
-    # Update finding count on the node
+    # Update finding count and worst-severity status on the node
     await db.execute(
         """UPDATE nodes SET finding_count = (
             SELECT COUNT(*) FROM findings
@@ -46,6 +63,7 @@ async def create_finding(data: FindingCreate) -> Finding:
         (data.assignment_id, data.assignment_id),
     )
     await db.commit()
+    await _refresh_node_status(data.assignment_id)
     finding = await get_finding(finding_id)
     if finding is None:
         raise RuntimeError(f"Failed to retrieve just-created finding {finding_id}")
@@ -143,7 +161,7 @@ async def resolve_stale_findings(assignment_id: str) -> dict[str, int]:
     )
     superseded = cursor.rowcount
 
-    # Update node finding count
+    # Update node finding count and worst-severity status
     await db.execute(
         """UPDATE nodes SET finding_count = (
             SELECT COUNT(*) FROM findings
@@ -152,4 +170,5 @@ async def resolve_stale_findings(assignment_id: str) -> dict[str, int]:
         (assignment_id, assignment_id),
     )
     await db.commit()
+    await _refresh_node_status(assignment_id)
     return {"resolved": resolved, "superseded": superseded}

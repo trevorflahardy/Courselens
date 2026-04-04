@@ -466,6 +466,13 @@ async def run_single_audit(
     )
     await db.commit()
 
+    # If the audit found no active findings, mark the node clean so it no longer shows 'unaudited'
+    await db.execute(
+        "UPDATE nodes SET status = 'ok' WHERE id = ? AND status = 'unaudited'",
+        (assignment_id,),
+    )
+    await db.commit()
+
     progress.status = "done"
     progress.events.append(
         {
