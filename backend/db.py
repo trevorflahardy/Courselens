@@ -18,6 +18,9 @@ async def get_db() -> aiosqlite.Connection:
         _db.row_factory = aiosqlite.Row
         await _db.execute("PRAGMA journal_mode=WAL")
         await _db.execute("PRAGMA foreign_keys=ON")
+        # Wait up to 10s for a write lock instead of failing immediately.
+        # Needed when the audit MCP subprocess (separate process) has a transaction open.
+        await _db.execute("PRAGMA busy_timeout=10000")
     return _db
 
 

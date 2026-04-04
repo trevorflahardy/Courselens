@@ -285,10 +285,15 @@ export default function AuditRunDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runId]);
 
-  // When SSE finishes, re-fetch the run record for final stats
+  // When SSE finishes, immediately reflect the terminal status in the badge,
+  // then re-fetch the DB record to get accurate final counts.
   useEffect(() => {
     if (stream.status === "done") {
-      fetchRun();
+      setRun((prev) => (prev ? { ...prev, status: "done" } : prev));
+      void fetchRun();
+    } else if (stream.status === "error") {
+      setRun((prev) => (prev ? { ...prev, status: "error" } : prev));
+      void fetchRun();
     }
   }, [stream.status, fetchRun]);
 

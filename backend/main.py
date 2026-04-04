@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import subprocess
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 
@@ -23,6 +24,43 @@ from backend.routers import audit, findings, graph, ingest, nodes, suggestions
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await init_db()
+
+    # Kill any lingering audit Claude subprocesses from a previous server session.
+    # They're identifiable by --allowedTools mcp__audit__ which only our audit
+    # engine passes. This also releases any SQLite write locks they hold.
+    _log = logging.getLogger(__name__)
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", "mcp__audit__"],
+            capture_output=True, text=True, timeout=3,
+        )
+        pids = [p.strip() for p in result.stdout.splitlines() if p.strip()]
+        if pids:
+            subprocess.run(["kill", "-TERM", *pids], timeout=3, check=False)
+            _log.warning("Sent SIGTERM to %d orphaned audit subprocess(es): %s", len(pids), pids)
+    except Exception as exc:  # noqa: BLE001
+        _log.debug("Orphan Claude cleanup skipped: %s", exc)
+
+    # On startup, any run still marked 'running' in the DB is an orphan from
+    # a previous server session. The asyncio tasks and subprocesses are gone —
+    # mark them as errored so they don't block new audits or show a false pulse.
+    db = await get_db()
+    cursor = await db.execute("SELECT COUNT(*) FROM audit_runs WHERE status = 'running'")
+    row = await cursor.fetchone()
+    orphan_count = int(row[0]) if row else 0
+    if orphan_count > 0:
+        await db.execute(
+            """UPDATE audit_runs
+               SET status = 'error',
+                   finished_at = datetime('now'),
+                   error_message = 'Server restarted — run interrupted'
+               WHERE status = 'running'"""
+        )
+        await db.commit()
+        logging.getLogger(__name__).warning(
+            "Cleaned up %d orphaned running audit run(s) on startup", orphan_count
+        )
+
     yield
     await close_db()
 

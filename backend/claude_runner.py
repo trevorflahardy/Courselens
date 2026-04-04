@@ -122,7 +122,10 @@ async def cancel_run(run_id: str) -> bool:
         await asyncio.wait_for(process.wait(), timeout=2)
     except asyncio.TimeoutError:
         process.kill()
-        await process.wait()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=2)
+        except asyncio.TimeoutError:
+            pass  # Process unkillable — OS will reap it
 
     state.status = "error"
     state.finished_at = datetime.now().isoformat()

@@ -32,6 +32,7 @@ import {
   ChevronRightIcon,
   Loader2Icon,
   AlertCircleIcon,
+  Trash2Icon,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -108,6 +109,8 @@ export default function AuditPage() {
   const [cancelingRunId, setCancelingRunId] = useState<string | null>(null);
   const [summary, setSummary] = useState<Record<string, unknown> | null>(null);
   const [summaryOpen, setSummaryOpen] = useState(false);
+  const [clearAllConfirm, setClearAllConfirm] = useState(false);
+  const [clearingAll, setClearingAll] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [mounted, setMounted] = useState(false);
 
@@ -175,16 +178,30 @@ export default function AuditPage() {
     setAuditLoading(true);
     setError(null);
     try {
+      // Clear any existing findings for this assignment before re-auditing
+      await api.deleteFindings(selectedAssignment);
       const result = await api.startAudit(selectedAssignment);
-      // Refresh runs list
       const updated = await api.listAuditRuns();
       setRuns(updated);
-      // Navigate to the live view
       router.push(`/audit/${result.id}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start audit");
     } finally {
       setAuditLoading(false);
+    }
+  }
+
+  async function handleClearAllFindings() {
+    setClearingAll(true);
+    setError(null);
+    try {
+      await api.deleteFindings();
+      setClearAllConfirm(false);
+      await fetchData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to clear findings");
+    } finally {
+      setClearingAll(false);
     }
   }
 
@@ -372,7 +389,54 @@ export default function AuditPage() {
           )}
           Summary
         </Button>
+
+        <Button
+          variant="outline"
+          onClick={() => setClearAllConfirm(true)}
+          disabled={hasRunning || auditState.batch_active}
+          className="gap-1.5 ml-auto border-red-500/25 text-red-400 hover:bg-red-500/10 hover:text-red-300"
+        >
+          <Trash2Icon className="size-4" />
+          Clear All Findings
+        </Button>
       </div>
+
+      {/* Clear All confirmation modal */}
+      {clearAllConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="glass rounded-xl border border-red-500/25 p-6 max-w-sm w-full mx-4 space-y-4">
+            <div className="flex items-start gap-3">
+              <Trash2Icon className="size-5 text-red-400 mt-0.5 shrink-0" />
+              <div>
+                <h3 className="text-sm font-semibold">Clear all findings?</h3>
+                <p className="text-[12px] text-muted-foreground mt-1 leading-relaxed">
+                  This will permanently delete every finding and suggestion across all assignments.
+                  All nodes will revert to unaudited. This cannot be undone.
+                </p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setClearAllConfirm(false)}
+                disabled={clearingAll}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                onClick={() => void handleClearAllFindings()}
+                disabled={clearingAll}
+                className="bg-red-500/20 border border-red-500/30 text-red-300 hover:bg-red-500/30"
+              >
+                {clearingAll ? <Loader2Icon className="size-3.5 animate-spin mr-1" /> : null}
+                Yes, delete everything
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Summary panel (collapsible) */}
       {summary && (

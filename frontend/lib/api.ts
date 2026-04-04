@@ -76,6 +76,11 @@ export const api = {
     return request<Finding[]>(`/api/findings${query ? `?${query}` : ""}`);
   },
 
+  deleteFindings: (assignmentId?: string) => {
+    const qs = assignmentId ? `?assignment_id=${encodeURIComponent(assignmentId)}` : "";
+    return request<{ deleted: number }>(`/api/findings${qs}`, { method: "DELETE" });
+  },
+
   // Graph
   getGraph: () => request<GraphState>("/api/graph"),
 
