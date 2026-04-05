@@ -28,6 +28,7 @@ async def _refresh_node_status(assignment_id: str) -> None:
         ) WHERE id = ?""",
         (assignment_id, assignment_id),
     )
+    await db.commit()
 
 
 async def create_finding(data: FindingCreate) -> Finding:
