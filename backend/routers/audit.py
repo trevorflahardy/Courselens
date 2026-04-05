@@ -29,6 +29,34 @@ _audit_progress: dict[str, AuditProgress] = {}
 _batch_audit_active: bool = False
 
 
+async def _mark_run_error(run_id: str, message: str) -> None:
+    """Write status='error' to DB for a run that is still 'running'. Idempotent."""
+    db = await get_db()
+    await db.execute(
+        "UPDATE audit_runs SET status = 'error', finished_at = datetime('now'), "
+        "error_message = ? WHERE id = ? AND status = 'running'",
+        (message[:500], run_id),
+    )
+    await db.commit()
+
+
+def _make_audit_done_callback(run_id: str):  # type: ignore[return]
+    """Return a Task done-callback that reconciles DB when a task ends unexpectedly.
+
+    This fires unconditionally when the asyncio Task completes (success, exception,
+    or cancellation), giving us a belt-and-suspenders guarantee that no run stays
+    stuck in 'running' due to an unhandled exception or task cancellation.
+    """
+    def _callback(task: asyncio.Task[AuditProgress]) -> None:
+        if task.cancelled():
+            asyncio.ensure_future(_mark_run_error(run_id, "Audit task was cancelled"))
+        elif task.exception() is not None:
+            exc = task.exception()
+            asyncio.ensure_future(_mark_run_error(run_id, f"Audit task raised: {exc}"))
+        # Success path: run_single_audit's finalize block already wrote status='done'
+    return _callback
+
+
 @router.get("/runs")
 async def list_runs(
     assignment_id: str | None = None,
@@ -150,6 +178,7 @@ async def resume_audit(run_id: str) -> AuditRun:
         return progress
 
     task = asyncio.create_task(_resume())
+    task.add_done_callback(_make_audit_done_callback(run_id))
     _audit_tasks[run_id] = task
 
     await asyncio.sleep(0.1)
@@ -235,6 +264,7 @@ async def start_audit(assignment_id: str) -> AuditRun:
         return progress
 
     task = asyncio.create_task(_run())
+    task.add_done_callback(_make_audit_done_callback(run_id))
     _audit_tasks[run_id] = task
 
     # Wait briefly for the run record to be inserted by run_single_audit
@@ -371,7 +401,14 @@ async def stream_audit(run_id: str) -> StreamingResponse:
                     },
                 )
             else:
-                yield _sse_event("heartbeat", {"message": "audit in progress"})
+                # Run is 'running' in DB but has no in-flight asyncio task.
+                # This is a mid-session zombie — it will never complete on its own.
+                # The task done-callback or startup cleanup should have caught this,
+                # but we emit error here as a defensive fallback for the SSE client.
+                yield _sse_event("error", {
+                    "message": "Audit run has no active task — likely interrupted",
+                    "orphaned": True,
+                })
 
     return StreamingResponse(
         event_generator(),

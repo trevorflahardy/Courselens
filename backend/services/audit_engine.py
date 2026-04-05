@@ -522,6 +522,29 @@ async def _handle_rate_limit(
     logger.warning("Audit %s paused at pass %d due to rate limit: %s", run_id, failed_pass, reason)
 
 
+async def _watch_pass_exit(
+    run_id: str,
+    pass_number: int,
+    process: asyncio.subprocess.Process,
+) -> None:
+    """Independent watcher for a Claude subprocess.
+
+    Runs concurrently with tail_run(). Process.wait() is idempotent so calling
+    it from both places is safe. If the subprocess exits non-zero this watcher
+    marks the parent audit_run as error — a fallback for cases where
+    run_single_audit()'s finalize block is never reached.
+    """
+    return_code = await process.wait()
+    if return_code != 0:
+        db = await get_db()
+        await db.execute(
+            "UPDATE audit_runs SET status = 'error', finished_at = datetime('now'), "
+            "error_message = ? WHERE id = ? AND status = 'running'",
+            (f"Pass {pass_number} subprocess exited with code {return_code}", run_id),
+        )
+        await db.commit()
+
+
 async def _execute_pass(
     run_id: str,
     assignment_id: str,
@@ -551,6 +574,11 @@ async def _execute_pass(
             logger.error("Failed to start pass %d for %s", pass_number, assignment_id)
             return 0
 
+        # Launch independent PID watcher — writes status='error' to DB if subprocess
+        # exits non-zero, completely independently of the tail_run() path below.
+        if state.process is not None:
+            asyncio.create_task(_watch_pass_exit(run_id, pass_number, state.process))
+
         # Tail subprocess output: forward thinking events, detect rate-limits
         async for event in tail_run(pass_run_id):
             event_type = str(event.get("type", ""))
@@ -573,10 +601,12 @@ async def _execute_pass(
     except Exception as e:
         logger.exception("Error in pass %d for %s: %s", pass_number, assignment_id, e)
         db = await get_db()
+        # Mark the run as error immediately — don't leave it stuck in 'running'.
+        # The WHERE clause is idempotent: only updates if still 'running'.
         await db.execute(
-            """UPDATE audit_runs SET error_message = COALESCE(error_message, '') || ?
-               WHERE id = ?""",
-            (f"\nPass {pass_number} error: {e}", run_id),
+            "UPDATE audit_runs SET status = 'error', finished_at = datetime('now'), "
+            "error_message = ? WHERE id = ? AND status = 'running'",
+            (f"Pass {pass_number} failed: {str(e)[:500]}", run_id),
         )
         await db.commit()
 

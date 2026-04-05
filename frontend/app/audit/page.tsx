@@ -140,13 +140,16 @@ export default function AuditPage() {
     fetchData();
   }, [fetchData]);
 
-  // Poll for updates when any run is active
-  const hasRunning = auditState.running_count > 0 || runs.some((r) => r.status === "running");
+  // Poll for updates when any run is active.
+  // Intentionally NOT using runs.some(r => r.status === "running") here — that reads
+  // from the captured-at-render array and causes a stale-closure infinite-polling loop.
+  // auditState is always fetched from the server and is the authoritative source.
+  const hasRunning = auditState.running_count > 0 || auditState.batch_active;
   const selectedAssignmentRunning =
     selectedAssignment.length > 0 && auditState.running_assignment_ids.includes(selectedAssignment);
 
   useEffect(() => {
-    if (!hasRunning && !auditState.batch_active) return;
+    if (!hasRunning) return;
     const interval = setInterval(() => {
       Promise.all([api.listAuditRuns(), api.getAuditState()])
         .then(([nextRuns, state]) => {
@@ -156,7 +159,18 @@ export default function AuditPage() {
         .catch(() => {});
     }, 3000);
     return () => clearInterval(interval);
-  }, [hasRunning, auditState.batch_active]);
+  }, [hasRunning]);
+
+  // Re-fetch when the user returns to this tab (e.g. navigating back from detail page).
+  // Next.js App Router may keep the component mounted, so useEffect([fetchData]) won't
+  // re-fire on navigation — visibilitychange guarantees a fresh fetch on tab focus.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void fetchData();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [fetchData]);
 
   // --- Grouped assignments by week ---
   const groupedByWeek = useMemo(() => {
