@@ -3,6 +3,7 @@
 > AI-powered course auditing for Canvas LMS. Ingest any course, derive a dependency graph, and run deep multi-pass AI reasoning to surface clarity issues, rubric mismatches, unstated prerequisites, and curriculum gaps — before your students find them.
 
 <img width="1265" height="760" alt="image" src="https://github.com/user-attachments/assets/633c5d4e-5aaf-48e2-8205-01a5e7157650" />
+<img width="905" height="305" alt="image" src="https://github.com/user-attachments/assets/a4a1adde-eb98-4588-b0e5-5dd17646cb6e" />
 <img width="1268" height="754" alt="image" src="https://github.com/user-attachments/assets/f7fccd56-a7b2-43bf-ad17-48f02163144f" />
 <img width="2130" height="1430" alt="image" src="https://github.com/user-attachments/assets/3a8da3eb-d1aa-4d01-a67e-af9604b4de8c" />
 
