@@ -14,9 +14,11 @@ Or mount into Claude Code via settings.json.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
+import httpx
 from fastmcp import FastMCP
 
 # Ensure project root is importable
@@ -25,8 +27,11 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 from backend.db import init_db  # noqa: E402
-from backend.models.finding import FindingCreate, FindingSeverity, FindingType  # noqa: E402
-from backend.services import finding_service, node_service  # noqa: E402
+from backend.services import node_service  # noqa: E402
+
+# FastAPI base URL — emit_* tools POST here instead of writing to SQLite directly.
+# This makes FastAPI the single DB writer, eliminating cross-process lock contention.
+_API_BASE = os.getenv("AUDIT_API_URL", "http://localhost:8000")
 
 # ---------------------------------------------------------------------------
 # Namespace: nodes
@@ -147,20 +152,27 @@ async def emit_finding(
     evidence: str | None = None,
 ) -> str:
     """Emit an audit finding. Records the node's current content_hash for change detection."""
-    await _ensure_db()
-    data = FindingCreate(
-        assignment_id=assignment_id,
-        audit_run_id=audit_run_id,
-        severity=FindingSeverity(severity),
-        finding_type=FindingType(finding_type),
-        title=title,
-        body=body,
-        pass_number=pass_number,
-        linked_node=linked_node,
-        evidence=evidence,
-    )
-    finding = await finding_service.create_finding(data)
-    return finding.model_dump_json()
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(
+                f"{_API_BASE}/internal/findings",
+                json={
+                    "assignment_id": assignment_id,
+                    "audit_run_id": audit_run_id,
+                    "severity": severity,
+                    "finding_type": finding_type,
+                    "title": title,
+                    "body": body,
+                    "pass_number": pass_number,
+                    "linked_node": linked_node,
+                    "evidence": evidence,
+                },
+                timeout=30,
+            )
+            r.raise_for_status()
+            return r.text
+    except httpx.HTTPError as e:
+        return json.dumps({"error": f"emit_finding failed: {e}"})
 
 
 @emit_mcp.tool()
@@ -173,24 +185,33 @@ async def emit_checkpoint(
 
     Idempotent — uses MAX so a re-call never decrements completed_passes.
     """
-    await _ensure_db()
-    from backend.db import get_db  # noqa: PLC0415
-
-    db = await get_db()
-    await db.execute(
-        "UPDATE audit_runs SET completed_passes = MAX(completed_passes, ?) WHERE id = ?",
-        (pass_number, audit_run_id),
-    )
-    await db.commit()
-    return json.dumps({"ok": True, "audit_run_id": audit_run_id, "pass_number": pass_number, "summary": summary})
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(
+                f"{_API_BASE}/internal/checkpoints",
+                json={"audit_run_id": audit_run_id, "pass_number": pass_number, "summary": summary},
+                timeout=10,
+            )
+            r.raise_for_status()
+            return r.text
+    except httpx.HTTPError as e:
+        return json.dumps({"error": f"emit_checkpoint failed: {e}"})
 
 
 @emit_mcp.tool()
 async def emit_resolve_stale(assignment_id: str) -> str:
     """After re-audit: resolve unmatched stale findings, confirm matched ones."""
-    await _ensure_db()
-    result = await finding_service.resolve_stale_findings(assignment_id)
-    return json.dumps(result)
+    try:
+        async with httpx.AsyncClient() as client:
+            r = await client.post(
+                f"{_API_BASE}/internal/resolve-stale",
+                json={"assignment_id": assignment_id},
+                timeout=10,
+            )
+            r.raise_for_status()
+            return r.text
+    except httpx.HTTPError as e:
+        return json.dumps({"error": f"emit_resolve_stale failed: {e}"})
 
 
 # ---------------------------------------------------------------------------
