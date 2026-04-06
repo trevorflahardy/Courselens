@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState, useMemo, useCallback } from "react";
+import { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import type { CourseNodeSummary, NodeLink, NodeType, NodeStatus } from "@/lib/types";
 import { useAuditState } from "@/hooks/useAuditState";
+import { useAuditStore } from "@/lib/store";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -36,6 +37,7 @@ import {
   X,
   Loader2,
   PackageOpen,
+  ChevronDown,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -201,12 +203,34 @@ export default function AssignmentsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Filters
-  const [search, setSearch] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [typeFilter, setTypeFilter] = useState("all");
-  const [severityFilter, setSeverityFilter] = useState("all");
-  const [weekFilter, setWeekFilter] = useState("all");
+  // Filters — persisted in Zustand so they survive navigation
+  const {
+    assignmentsSearch: search,
+    assignmentsTypeFilter: typeFilter,
+    assignmentsSeverityFilter: severityFilter,
+    assignmentsWeekFilter: weekFilter,
+    setAssignmentsFilters,
+  } = useAuditStore();
+  const setSearch = (v: string) => setAssignmentsFilters({ search: v });
+  const setTypeFilter = (v: string) => setAssignmentsFilters({ typeFilter: v });
+  const setSeverityFilter = (v: string) => setAssignmentsFilters({ severityFilter: v });
+  const setWeekFilter = (v: string) => setAssignmentsFilters({ weekFilter: v });
+  const [debouncedSearch, setDebouncedSearch] = useState(search);
+
+  // Scroll position restore
+  const scrollRestoredRef = useRef(false);
+  useEffect(() => {
+    const handler = () => sessionStorage.setItem("assignments-scroll", String(window.scrollY));
+    window.addEventListener("scroll", handler, { passive: true });
+    return () => window.removeEventListener("scroll", handler);
+  }, []);
+  useEffect(() => {
+    if (!loading && !scrollRestoredRef.current) {
+      scrollRestoredRef.current = true;
+      const saved = sessionStorage.getItem("assignments-scroll");
+      if (saved) window.scrollTo(0, Number(saved));
+    }
+  }, [loading]);
   const [assignDialogOpen, setAssignDialogOpen] = useState(false);
   const [selectedUnassigned, setSelectedUnassigned] = useState<CourseNodeSummary | null>(null);
   const [assignWeek, setAssignWeek] = useState("");
@@ -457,11 +481,8 @@ export default function AssignmentsPage() {
   }
 
   const clearAllFilters = useCallback(() => {
-    setSearch("");
-    setTypeFilter("all");
-    setSeverityFilter("all");
-    setWeekFilter("all");
-  }, []);
+    setAssignmentsFilters({ search: "", typeFilter: "all", severityFilter: "all", weekFilter: "all" });
+  }, [setAssignmentsFilters]);
 
   const assignmentOptions = useMemo(() => {
     return nodes
@@ -909,10 +930,18 @@ function WeekGroup({
   onCardDrop: (node: CourseNodeSummary) => void;
   runningAssignmentIds: string[];
 }) {
+  const [collapsed, setCollapsed] = useState(false);
+
   return (
     <div className="space-y-3">
       {/* Week header */}
-      <div className="flex items-center gap-2.5">
+      <button
+        onClick={() => setCollapsed((c) => !c)}
+        className="w-full flex items-center gap-2.5 group"
+      >
+        <ChevronDown
+          className={`size-3.5 text-muted-foreground/60 shrink-0 transition-transform ${collapsed ? "-rotate-90" : ""}`}
+        />
         <h2 className="text-sm font-semibold tracking-tight text-foreground/90">
           {module ?? (week !== null ? `Week ${week}` : "Unassigned")}
         </h2>
@@ -920,10 +949,10 @@ function WeekGroup({
           {items.length} item{items.length !== 1 ? "s" : ""}
         </span>
         <div className="flex-1 h-px bg-white/12" />
-      </div>
+      </button>
 
       {/* Card grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+      {!collapsed && <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
         {items.map((item) => (
           <AssignmentCard
             key={item.key}
@@ -947,7 +976,7 @@ function WeekGroup({
             isAuditing={runningAssignmentIds.includes(item.node.id)}
           />
         ))}
-      </div>
+      </div>}
     </div>
   );
 }

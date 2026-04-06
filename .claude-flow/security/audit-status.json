@@ -1,0 +1,8 @@
+{
+  "initialized": "2026-04-06T12:21:55.481Z",
+  "status": "PENDING",
+  "cvesFixed": 0,
+  "totalCves": 3,
+  "lastScan": null,
+  "_note": "Run: npx @claude-flow/cli@latest security scan"
+}
