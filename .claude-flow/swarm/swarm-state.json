@@ -1,7 +1,7 @@
 {
   "swarms": {
-    "swarm-1775479140184-pjoor5": {
-      "swarmId": "swarm-1775479140184-pjoor5",
+    "swarm-1775478302317-orof9z": {
+      "swarmId": "swarm-1775478302317-orof9z",
       "topology": "hierarchical",
       "maxAgents": 15,
       "status": "running",
@@ -15,8 +15,8 @@
         "autoScaling": true,
         "consensusMechanism": "majority"
       },
-      "createdAt": "2026-04-06T12:39:00.184Z",
-      "updatedAt": "2026-04-06T12:39:00.184Z"
+      "createdAt": "2026-04-06T12:25:02.317Z",
+      "updatedAt": "2026-04-06T12:25:02.317Z"
     }
   },
   "version": "3.0.0"

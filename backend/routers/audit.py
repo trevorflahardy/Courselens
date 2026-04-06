@@ -164,19 +164,15 @@ async def resume_audit(run_id: str) -> AuditRun:
     )
     await db.commit()
 
-    # Re-register progress tracker so SSE can stream the resumed run.
-    # Pass the shared object into run_single_audit so events are visible live.
-    shared_progress = AuditProgress(
+    # Re-register progress tracker so SSE can stream the resumed run
+    _audit_progress[run_id] = AuditProgress(
         run_id=run_id,
         assignment_id=run.assignment_id,
         completed_passes=run.completed_passes or 0,
     )
-    _audit_progress[run_id] = shared_progress
 
     async def _resume() -> AuditProgress:
-        progress = await run_single_audit(
-            run.assignment_id, run_id=run_id, start_pass=start_pass, progress=shared_progress
-        )
+        progress = await run_single_audit(run.assignment_id, run_id=run_id, start_pass=start_pass)
         _audit_progress[run_id] = progress
         _audit_tasks.pop(run_id, None)
         return progress
@@ -257,15 +253,12 @@ async def start_audit(assignment_id: str) -> AuditRun:
 
     run_id = f"run-{uuid.uuid4().hex[:8]}"
 
-    # Launch the audit in the background so the POST returns immediately.
-    # Pre-create progress and pass it into run_single_audit so both the SSE
-    # generator and the audit engine share the same object — events appended
-    # inside run_single_audit are immediately visible to the SSE reader.
-    shared_progress = AuditProgress(run_id=run_id, assignment_id=assignment_id)
-    _audit_progress[run_id] = shared_progress
+    # Launch the audit in the background so the POST returns immediately
+    # Pre-create progress so SSE can stream events as they arrive
+    _audit_progress[run_id] = AuditProgress(run_id=run_id, assignment_id=assignment_id)
 
     async def _run() -> AuditProgress:
-        progress = await run_single_audit(assignment_id, run_id=run_id, progress=shared_progress)
+        progress = await run_single_audit(assignment_id, run_id=run_id)
         _audit_progress[run_id] = progress
         _audit_tasks.pop(run_id, None)
         return progress

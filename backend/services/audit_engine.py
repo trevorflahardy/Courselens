@@ -319,7 +319,6 @@ async def run_single_audit(
     assignment_id: str,
     run_id: str | None = None,
     start_pass: int = 1,
-    progress: AuditProgress | None = None,
 ) -> AuditProgress:
     """Run a full 3-pass audit on a single assignment.
 
@@ -327,18 +326,11 @@ async def run_single_audit(
         assignment_id: Node ID to audit.
         run_id: Existing run ID (for resumes) or None to create a new one.
         start_pass: Which pass to start from (1=fresh, 2 or 3=resume after rate-limit).
-        progress: Pre-created AuditProgress to mutate in-place. If provided, the caller
-            can observe events being appended as the audit runs (used for SSE streaming).
     """
     if run_id is None:
         run_id = f"run-{uuid.uuid4().hex[:8]}"
 
-    if progress is None:
-        progress = AuditProgress(run_id=run_id, assignment_id=assignment_id)
-    else:
-        # Ensure run_id is consistent
-        progress.run_id = run_id
-        progress.assignment_id = assignment_id
+    progress = AuditProgress(run_id=run_id, assignment_id=assignment_id)
 
     # Fetch the node
     node = await get_node(assignment_id)
