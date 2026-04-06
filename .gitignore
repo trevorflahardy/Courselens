@@ -46,4 +46,3 @@ Thumbs.db
 # Ruflo related
 .claude_flow/
 .swarm/
-daemon-state.json
