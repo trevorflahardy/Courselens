@@ -42,3 +42,7 @@ data/files/*
 # OS
 .DS_Store
 Thumbs.db
+
+# Ruflo related
+.claude_flow/
+.swarm/
