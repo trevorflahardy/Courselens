@@ -320,6 +320,11 @@ export default function IngestPage() {
   const syncFeedRef = useRef<HTMLDivElement>(null);
   const syncPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  /* ---- Process monitor ---- */
+  type ProcessInfo = { run_id: string; status: string; pid: number | null; alive: boolean; started_at: string; finished_at: string | null };
+  const [processes, setProcesses] = useState<ProcessInfo[]>([]);
+  const processPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   /* ---- Graph rebuild state ---- */
   const [rebuildingGraph, setRebuildingGraph] = useState(false);
   const [graphResult, setGraphResult] = useState<GraphResult | null>(null);
@@ -521,6 +526,16 @@ export default function IngestPage() {
       syncFeedRef.current.scrollTop = syncFeedRef.current.scrollHeight;
     }
   }, [syncFeed]);
+
+  // Poll process list every 3 s so the user can see if Claude is actually running
+  useEffect(() => {
+    const refresh = () => api.getProcesses().then(setProcesses).catch(() => {});
+    refresh();
+    processPollRef.current = setInterval(refresh, 3000);
+    return () => {
+      if (processPollRef.current) clearInterval(processPollRef.current);
+    };
+  }, []);
 
   /* ---- Graph rebuild handler ---- */
   const handleRebuildGraph = useCallback(async () => {
@@ -830,6 +845,27 @@ export default function IngestPage() {
                 {syncError && (
                   <p className="text-[11px] text-destructive/80 break-words">{syncError}</p>
                 )}
+              </div>
+            )}
+
+            {/* Process monitor */}
+            {processes.length > 0 && (
+              <div className="space-y-1">
+                <p className="text-[10px] uppercase tracking-wider text-muted-foreground/50">Claude processes</p>
+                {processes.map((p) => (
+                  <div key={p.run_id} className="flex items-center justify-between rounded-md bg-black/20 border border-white/[0.06] px-2.5 py-1.5 text-[11px] font-mono">
+                    <div className="flex items-center gap-2">
+                      <span className={`size-1.5 rounded-full shrink-0 ${p.alive ? "bg-emerald-400 animate-pulse" : "bg-white/20"}`} />
+                      <span className="text-muted-foreground/70">{p.run_id}</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-muted-foreground/50">
+                      {p.pid && <span>PID {p.pid}</span>}
+                      <span className={p.alive ? "text-emerald-400" : p.status === "done" ? "text-white/40" : "text-destructive/70"}>
+                        {p.alive ? "running" : p.status}
+                      </span>
+                    </div>
+                  </div>
+                ))}
               </div>
             )}
 

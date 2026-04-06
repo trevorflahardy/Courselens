@@ -33,13 +33,6 @@ interface AuditStore {
   selectedCourseId: string | null;
   selectedCourseName: string | null;
   setSelectedCourse: (id: string, name: string) => void;
-
-  // Assignments page filters (persisted across navigation)
-  assignmentsSearch: string;
-  assignmentsTypeFilter: string;
-  assignmentsSeverityFilter: string;
-  assignmentsWeekFilter: string;
-  setAssignmentsFilters: (filters: { search?: string; typeFilter?: string; severityFilter?: string; weekFilter?: string }) => void;
 }
 
 export const useAuditStore = create<AuditStore>((set, get) => ({
@@ -132,19 +125,6 @@ export const useAuditStore = create<AuditStore>((set, get) => ({
   // UI state
   selectedNodeId: null,
   setSelectedNodeId: (id) => set({ selectedNodeId: id }),
-
-  // Assignments page filters
-  assignmentsSearch: "",
-  assignmentsTypeFilter: "all",
-  assignmentsSeverityFilter: "all",
-  assignmentsWeekFilter: "all",
-  setAssignmentsFilters: (filters) =>
-    set((s) => ({
-      assignmentsSearch: filters.search !== undefined ? filters.search : s.assignmentsSearch,
-      assignmentsTypeFilter: filters.typeFilter !== undefined ? filters.typeFilter : s.assignmentsTypeFilter,
-      assignmentsSeverityFilter: filters.severityFilter !== undefined ? filters.severityFilter : s.assignmentsSeverityFilter,
-      assignmentsWeekFilter: filters.weekFilter !== undefined ? filters.weekFilter : s.assignmentsWeekFilter,
-    })),
 
   // Course selection — persisted to localStorage via side-effect in CourseSelector
   selectedCourseId:
