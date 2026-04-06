@@ -1,0 +1,11 @@
+{
+  "timestamp": "2026-04-06T12:54:48.123Z",
+  "projectRoot": "/Users/futur/Library/Mobile Documents/com~apple~CloudDocs/School/USF/TA Jobs/EGN 3000L/complete_course_audit",
+  "structure": {
+    "hasPackageJson": false,
+    "hasTsConfig": false,
+    "hasClaudeConfig": true,
+    "hasClaudeFlow": true
+  },
+  "scannedAt": 1775480088123
+}
