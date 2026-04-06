@@ -251,6 +251,21 @@ export default function AssignmentsPage() {
     return () => clearTimeout(t);
   }, [search]);
 
+  // Auto-refresh nodes when a running audit finishes
+  const prevRunningCountRef = useRef(auditState.running_count);
+  useEffect(() => {
+    const prev = prevRunningCountRef.current;
+    prevRunningCountRef.current = auditState.running_count;
+    if (prev > 0 && auditState.running_count === 0) {
+      Promise.all([api.listNodes(), api.listAllNodeLinks()])
+        .then(([data, links]) => {
+          setNodes(data.filter((node) => node.type !== "rubric"));
+          setNodeLinks(links);
+        })
+        .catch(() => {});
+    }
+  }, [auditState.running_count]);
+
   // Fetch nodes
   useEffect(() => {
     let cancelled = false;
