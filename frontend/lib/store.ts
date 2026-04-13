@@ -33,6 +33,7 @@ interface AuditStore {
   selectedCourseId: string | null;
   selectedCourseName: string | null;
   setSelectedCourse: (id: string, name: string) => void;
+  hydrateCourseSelection: () => void;
 }
 
 export const useAuditStore = create<AuditStore>((set, get) => ({
@@ -126,16 +127,22 @@ export const useAuditStore = create<AuditStore>((set, get) => ({
   selectedNodeId: null,
   setSelectedNodeId: (id) => set({ selectedNodeId: id }),
 
-  // Course selection — persisted to localStorage via side-effect in CourseSelector
-  selectedCourseId:
-    typeof window !== "undefined" ? localStorage.getItem("selectedCourseId") : null,
-  selectedCourseName:
-    typeof window !== "undefined" ? localStorage.getItem("selectedCourseName") : null,
+  // Course selection defaults are SSR-safe; persisted values are hydrated on the client.
+  selectedCourseId: null,
+  selectedCourseName: null,
   setSelectedCourse: (id, name) => {
     if (typeof window !== "undefined") {
       localStorage.setItem("selectedCourseId", id);
       localStorage.setItem("selectedCourseName", name);
     }
     set({ selectedCourseId: id, selectedCourseName: name });
+  },
+  hydrateCourseSelection: () => {
+    if (typeof window === "undefined") return;
+
+    const selectedCourseId = localStorage.getItem("selectedCourseId");
+    const selectedCourseName = localStorage.getItem("selectedCourseName");
+
+    set({ selectedCourseId, selectedCourseName });
   },
 }));

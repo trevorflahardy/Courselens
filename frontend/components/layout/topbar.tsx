@@ -70,11 +70,13 @@ function CourseSelector() {
 export function TopBar() {
   const pathname = usePathname();
   const { title, parent } = getBreadcrumb(pathname);
+  const hydrateCourseSelection = useAuditStore((state) => state.hydrateCourseSelection);
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
+    hydrateCourseSelection();
     setMounted(true);
-  }, []);
+  }, [hydrateCourseSelection]);
 
   return (
     <header className="sticky top-0 z-30 flex h-12 items-center justify-between border-b border-[oklch(0.82_0.02_275_/_0.5)] dark:border-[oklch(0.35_0.03_270_/_0.2)] bg-[oklch(0.99_0.005_275_/_0.75)] dark:bg-[oklch(0.13_0.02_280_/_0.6)] backdrop-blur-xl px-8 shadow-[0_1px_3px_oklch(0_0_0_/_0.06)] dark:shadow-none">
