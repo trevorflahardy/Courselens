@@ -945,7 +945,7 @@ export default function AssignmentDetailPage() {
 // Sub-components
 // ---------------------------------------------------------------------------
 
-type ReasonMode = "deny" | "ignore" | "done" | null;
+type ReasonMode = "deny" | "ignore" | "done" | "manual_entry" | null;
 
 function FindingReviewCard({
   finding,
@@ -957,7 +957,7 @@ function FindingReviewCard({
   onReload: () => Promise<void>;
 }) {
   const [expanded, setExpanded] = useState(true);
-  const [acting, setActing] = useState<"approve" | "deny" | "ignore" | "done" | "generate" | null>(null);
+  const [acting, setActing] = useState<"approve" | "deny" | "ignore" | "done" | "generate" | "manual_entry" | null>(null);
   const [dialogMode, setDialogMode] = useState<ReasonMode>(null);
   const [reasonText, setReasonText] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -1016,8 +1016,26 @@ function FindingReviewCard({
   };
 
   const submitReason = async () => {
-    if (!suggestion || dialogMode === null) return;
+    if (dialogMode === null) return;
     const trimmed = reasonText.trim();
+
+    if (dialogMode === "manual_entry") {
+      setActing("manual_entry");
+      setErrorMessage(null);
+      try {
+        await api.addManualChangelogEntry(finding.id, trimmed.length > 0 ? trimmed : null);
+        setDialogMode(null);
+        setReasonText("");
+        await onReload();
+      } catch (err) {
+        setErrorMessage(err instanceof Error ? err.message : String(err));
+      } finally {
+        setActing(null);
+      }
+      return;
+    }
+
+    if (!suggestion) return;
     if ((dialogMode === "deny" || dialogMode === "ignore") && trimmed.length === 0) {
       setErrorMessage("A reason is required.");
       return;
@@ -1182,13 +1200,24 @@ function FindingReviewCard({
             </div>
           ) : (
             !handled && (
-              <div>
+              <div className="flex flex-wrap gap-2">
                 <button
                   onClick={runGenerate}
                   disabled={acting !== null}
                   className="rounded-lg border border-primary/30 bg-primary/10 px-3 py-1.5 text-[12px] font-medium text-primary hover:bg-primary/20 transition-all disabled:opacity-50"
                 >
                   {acting === "generate" ? "Generating fix…" : "Generate fix with AI"}
+                </button>
+                <button
+                  onClick={() => {
+                    setDialogMode("manual_entry");
+                    setReasonText("");
+                    setErrorMessage(null);
+                  }}
+                  disabled={acting !== null}
+                  className="rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-1.5 text-[12px] font-medium text-sky-300 hover:bg-sky-500/20 transition-all disabled:opacity-50"
+                >
+                  Add changelog entry
                 </button>
               </div>
             )
@@ -1216,6 +1245,7 @@ function FindingReviewCard({
               {dialogMode === "deny" && "Deny this suggestion"}
               {dialogMode === "ignore" && "Ignore this suggestion"}
               {dialogMode === "done" && "Mark as done manually"}
+              {dialogMode === "manual_entry" && "Add changelog entry"}
             </DialogTitle>
             <DialogDescription>
               {dialogMode === "deny" &&
@@ -1224,13 +1254,15 @@ function FindingReviewCard({
                 "Explain why you're deferring this. The finding stays active so it can resurface on the next audit."}
               {dialogMode === "done" &&
                 "Optional note describing what you did. The change is logged in the changelog regardless."}
+              {dialogMode === "manual_entry" &&
+                "Record that this was fixed manually or that a related item was addressed. The finding stays active. Optional note is saved to the changelog."}
             </DialogDescription>
           </DialogHeader>
           <textarea
             value={reasonText}
             onChange={(e) => setReasonText(e.target.value)}
             placeholder={
-              dialogMode === "done"
+              dialogMode === "done" || dialogMode === "manual_entry"
                 ? "Optional note…"
                 : "Reason (required)…"
             }

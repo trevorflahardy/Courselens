@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
+from pydantic import BaseModel, ConfigDict
 
-from backend.models.applied_change import AppliedChange
-from backend.services import changelog_service
+from backend.models.applied_change import AppliedChange, AppliedChangeAction, AppliedChangeCreate
+from backend.services import changelog_service, finding_service
 
 router = APIRouter(prefix="/api/changelog", tags=["changelog"])
+
+
+class ManualEntryRequest(BaseModel):
+    model_config = ConfigDict(strict=True)
+
+    note: str | None = None
 
 
 @router.get("")
@@ -26,6 +33,37 @@ async def list_changelog(
 @router.get("/stats")
 async def changelog_stats() -> dict[str, int]:
     return await changelog_service.get_stats()
+
+
+@router.post("/manual/{finding_id}")
+async def add_manual_entry(finding_id: str, body: ManualEntryRequest) -> AppliedChange:
+    """Create a manual changelog entry for a finding without an AI suggestion.
+
+    Useful for recording fixes done outside the system, or marking a related
+    item as resolved. The finding itself is not modified.
+    """
+    finding = await finding_service.get_finding(finding_id)
+    if finding is None:
+        raise HTTPException(status_code=404, detail=f"Finding {finding_id!r} not found")
+
+    data = AppliedChangeCreate(
+        suggestion_id=None,
+        finding_id=finding.id,
+        node_id=finding.assignment_id,
+        action=AppliedChangeAction.DONE_MANUALLY,
+        target_type="manual",
+        field="manual",
+        original_text="",
+        new_text="",
+        diff_patch="",
+        finding_title=finding.title,
+        finding_severity=finding.severity.value,
+        finding_pass=finding.pass_number,
+        evidence_quote=finding.evidence,
+        reason_or_note=body.note,
+        handled_by="trevor",
+    )
+    return await changelog_service.create_applied_change(data)
 
 
 @router.get("/export.md")

@@ -155,7 +155,7 @@ export type AppliedChangeAction = "applied" | "denied" | "ignored" | "done_manua
 
 export interface AppliedChange {
   id: string;
-  suggestion_id: string;
+  suggestion_id: string | null;
   finding_id: string;
   node_id: string;
   action: AppliedChangeAction;

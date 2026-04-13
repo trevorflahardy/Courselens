@@ -5,10 +5,17 @@
  * synthetic diff built from original/new text) and colors each line.
  */
 
+const MAX_LINE_LENGTH = 120;
+
+function truncateLine(line: string): string {
+  if (line.length <= MAX_LINE_LENGTH) return line;
+  return line.slice(0, MAX_LINE_LENGTH) + "…";
+}
+
 export function DiffView({ patch }: { patch: string }) {
   const lines = patch.split("\n");
   return (
-    <pre className="rounded-lg bg-card/60 border border-border text-[11px] leading-5 overflow-x-auto p-3 font-mono">
+    <pre className="rounded-lg bg-card/60 border border-border text-[11px] leading-5 overflow-x-auto p-3 font-mono whitespace-pre">
       {lines.map((line, i) => {
         const cls =
           line.startsWith("+") && !line.startsWith("+++")
@@ -20,7 +27,7 @@ export function DiffView({ patch }: { patch: string }) {
                 : "text-muted-foreground/70 block";
         return (
           <span key={i} className={cls}>
-            {line || " "}
+            {truncateLine(line) || " "}
           </span>
         );
       })}

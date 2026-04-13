@@ -210,6 +210,12 @@ export const api = {
   generateSuggestionForFinding: (findingId: string) =>
     request<Suggestion>(`/api/suggestions/generate/${findingId}`, { method: "POST" }),
 
+  addManualChangelogEntry: (findingId: string, note: string | null) =>
+    request<AppliedChange>(`/api/changelog/manual/${findingId}`, {
+      method: "POST",
+      body: JSON.stringify({ note }),
+    }),
+
   // Changelog
   listChangelog: (params?: {
     node_id?: string;

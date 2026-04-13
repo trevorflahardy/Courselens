@@ -26,7 +26,7 @@ class AppliedChange(BaseModel):
     model_config = ConfigDict(strict=True)
 
     id: str
-    suggestion_id: str
+    suggestion_id: str | None = None
     finding_id: str
     node_id: str
     action: AppliedChangeAction
@@ -48,7 +48,7 @@ class AppliedChange(BaseModel):
 class AppliedChangeCreate(BaseModel):
     model_config = ConfigDict(strict=True)
 
-    suggestion_id: str
+    suggestion_id: str | None = None
     finding_id: str
     node_id: str
     action: AppliedChangeAction

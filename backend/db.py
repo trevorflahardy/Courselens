@@ -158,6 +158,46 @@ async def init_db() -> None:
         """)
         await db.commit()
 
+    # Idempotent migration: make applied_changes.suggestion_id nullable so
+    # manual changelog entries (created without an AI suggestion) can be stored.
+    cursor = await db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='applied_changes'"
+    )
+    row = await cursor.fetchone()
+    if row and "suggestion_id     TEXT NOT NULL" in str(row[0]):
+        await db.executescript("""
+            PRAGMA foreign_keys=OFF;
+            ALTER TABLE applied_changes RENAME TO applied_changes_old;
+            CREATE TABLE applied_changes (
+                id                TEXT PRIMARY KEY,
+                suggestion_id     TEXT REFERENCES suggestions(id),
+                finding_id        TEXT NOT NULL REFERENCES findings(id),
+                node_id           TEXT NOT NULL REFERENCES nodes(id),
+                action            TEXT NOT NULL
+                                  CHECK(action IN ('applied','denied','ignored','done_manually')),
+                target_type       TEXT NOT NULL,
+                field             TEXT NOT NULL,
+                original_text     TEXT NOT NULL,
+                new_text          TEXT NOT NULL,
+                diff_patch        TEXT NOT NULL,
+                finding_title     TEXT NOT NULL,
+                finding_severity  TEXT NOT NULL,
+                finding_pass      INTEGER,
+                evidence_quote    TEXT,
+                reason_or_note    TEXT,
+                canvas_response   TEXT,
+                handled_by        TEXT NOT NULL,
+                created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT INTO applied_changes SELECT * FROM applied_changes_old;
+            DROP TABLE applied_changes_old;
+            CREATE INDEX IF NOT EXISTS idx_applied_changes_node ON applied_changes(node_id);
+            CREATE INDEX IF NOT EXISTS idx_applied_changes_created ON applied_changes(created_at);
+            CREATE INDEX IF NOT EXISTS idx_applied_changes_action ON applied_changes(action);
+            PRAGMA foreign_keys=ON;
+        """)
+        await db.commit()
+
     # Idempotent migration: fix findings FK broken by the audit_runs rename.
     # SQLite auto-rewrites FK references on RENAME, so findings ended up pointing
     # at audit_runs_old (which was then dropped). Rebuild findings with the correct FK.

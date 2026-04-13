@@ -270,13 +270,20 @@ function ChangeCard({ change, index }: { change: AppliedChange; index: number })
           {change.evidence_quote}
         </p>
       )}
-      <p className="text-[11px] text-muted-foreground/60">
-        Target: <span className="font-mono">{change.target_type}</span>
-        {" · "}
-        field: <span className="font-mono">{change.field}</span>
-        {" · by "}
-        {change.handled_by}
-      </p>
+      {change.target_type !== "manual" && (
+        <p className="text-[11px] text-muted-foreground/60">
+          Target: <span className="font-mono">{change.target_type}</span>
+          {" · "}
+          field: <span className="font-mono">{change.field}</span>
+          {" · by "}
+          {change.handled_by}
+        </p>
+      )}
+      {change.target_type === "manual" && (
+        <p className="text-[11px] text-muted-foreground/60">
+          Manual entry · by {change.handled_by}
+        </p>
+      )}
       {change.reason_or_note && (
         <p className="text-[12px] text-foreground/80">
           <span className="font-semibold">
@@ -290,7 +297,7 @@ function ChangeCard({ change, index }: { change: AppliedChange; index: number })
           {change.reason_or_note}
         </p>
       )}
-      <DiffView patch={change.diff_patch} />
+      {change.diff_patch && <DiffView patch={change.diff_patch} />}
     </div>
   );
 }

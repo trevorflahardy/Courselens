@@ -411,6 +411,7 @@ async def apply_suggestion(suggestion: Suggestion) -> tuple[bool, str, str]:
         except Exception as exc:  # noqa: BLE001
             logger.warning("apply_suggestion: rubric update failed: %s", exc)
             return False, "", str(exc)
+        await _persist_rubric_criteria(suggestion.node_id, criteria)
         return True, suggestion.suggested_text, "rubric criterion updated"
 
     # --- Module item ---
@@ -443,6 +444,9 @@ async def apply_suggestion(suggestion: Suggestion) -> tuple[bool, str, str]:
         except Exception as exc:  # noqa: BLE001
             logger.warning("apply_suggestion: assignment title update failed: %s", exc)
             return False, "", str(exc)
+        db = await get_db()
+        await db.execute("UPDATE nodes SET title = ? WHERE id = ?", (new_title, suggestion.node_id))
+        await db.commit()
         return True, new_title, "assignment title updated"
 
     logger.warning("apply_suggestion: unsupported target_type %s", target)
