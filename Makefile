@@ -16,7 +16,7 @@ setup:
 dev:
 	@echo "Starting backend on :8000 and frontend on :3000..."
 	@trap 'kill 0' INT; \
-	. .venv/bin/activate && uvicorn backend.main:app --reload --port 8000 & \
+	. .venv/bin/activate && uvicorn backend.main:app --reload --reload-dir backend --reload-dir audit_mcp --port 8000 & \
 	cd frontend && bun run dev & \
 	wait
 

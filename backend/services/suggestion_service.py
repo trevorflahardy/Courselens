@@ -23,9 +23,6 @@ from backend.services.node_service import get_assignment_rubric, get_node
 
 logger = logging.getLogger(__name__)
 
-# Finding types that qualify for auto-suggestions (small text-level fixes only)
-QUALIFYING_TYPES = {"clarity", "format_mismatch", "rubric_mismatch", "rubric_drift"}
-
 _DEFAULT_HANDLER = "trevor"
 
 
@@ -122,12 +119,14 @@ async def _set_terminal_status(
 # ---------------------------------------------------------------------------
 
 async def generate_suggestion_for_finding(finding: Finding) -> Suggestion | None:
-    """Generate a text fix suggestion for a qualifying finding using Claude."""
-    if finding.finding_type.value not in QUALIFYING_TYPES:
+    """Generate a text fix suggestion for a finding using Claude."""
+    node = await get_node(finding.assignment_id)
+    if node is None:
         return None
 
-    node = await get_node(finding.assignment_id)
-    if node is None or not node.description:
+    # Prefer description; fall back to file_content (e.g. page nodes with downloaded body).
+    source_text = node.description or node.file_content
+    if not source_text:
         return None
 
     # For rubric-typed findings, pass rubric JSON as source-of-truth text.
@@ -141,19 +140,21 @@ async def generate_suggestion_for_finding(finding: Finding) -> Suggestion | None
                 + json.dumps(rubric["criteria"], indent=2)[:3000]
             )
             target_hint = "rubric_criterion"
+    elif node.description is None and node.file_content:
+        target_hint = "page_body"
 
     prompt = (
         f"You are a course content editor. An audit finding was recorded:\n\n"
         f"Title: {finding.title}\n"
         f"Body: {finding.body}\n"
         f"Evidence: {finding.evidence or '(none)'}\n\n"
-        f"Current assignment description (first 3000 chars):\n{node.description[:3000]}"
+        f"Current content (first 3000 chars):\n{source_text[:3000]}"
         f"{rubric_context}\n\n"
         "Produce a minimal, surgical correction to a single field. "
         "Quote the original text verbatim (max 500 chars). "
         f"Default target is '{target_hint}'. "
         "Return valid JSON only — no explanation, no markdown fences:\n"
-        '{"target_type": "description|page_body|rubric_criterion", '
+        '{"target_type": "description|page_body|rubric_criterion|title", '
         '"target_ref": "<optional JSON string, e.g. {\\"criterion_id\\": \\"_1234\\"} for rubric_criterion>", '
         '"field": "description|long_description", '
         '"original_text": "<verbatim excerpt>", '
