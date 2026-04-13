@@ -186,6 +186,7 @@ export default function AssignmentDetailPage() {
   const [node, setNode] = useState<CourseNode | null>(null);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [suggestionsByFinding, setSuggestionsByFinding] = useState<Record<string, Suggestion>>({});
+  const [manualEntriesByFinding, setManualEntriesByFinding] = useState<Record<string, boolean>>({});
   const [rubric, setRubric] = useState<Rubric | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -225,8 +226,9 @@ export default function AssignmentDetailPage() {
       api.getNode(id),
       api.listFindings({ assignment_id: id }),
       api.listSuggestions({ node_id: id }),
+      api.listChangelog({ node_id: id }),
     ])
-      .then(([nodeData, findingsData, suggestionsData]) => {
+      .then(([nodeData, findingsData, suggestionsData, changelogData]) => {
         if (cancelled) return;
         setNode(nodeData);
         setFindings(
@@ -237,6 +239,11 @@ export default function AssignmentDetailPage() {
         const map: Record<string, Suggestion> = {};
         for (const s of suggestionsData) map[s.finding_id] = s;
         setSuggestionsByFinding(map);
+        const manualMap: Record<string, boolean> = {};
+        for (const c of changelogData) {
+          if (c.suggestion_id === null) manualMap[c.finding_id] = true;
+        }
+        setManualEntriesByFinding(manualMap);
         setLinkWeek(nodeData.week !== null ? String(nodeData.week) : "");
         setLinkModule(nodeData.module ?? "");
 
@@ -387,9 +394,10 @@ export default function AssignmentDetailPage() {
 
   const reloadFindingsAndSuggestions = async () => {
     if (!id) return;
-    const [newFindings, newSuggestions] = await Promise.all([
+    const [newFindings, newSuggestions, changelog] = await Promise.all([
       api.listFindings({ assignment_id: id }),
       api.listSuggestions({ node_id: id }),
+      api.listChangelog({ node_id: id }),
     ]);
     setFindings(
       newFindings.filter(
@@ -399,6 +407,11 @@ export default function AssignmentDetailPage() {
     const map: Record<string, Suggestion> = {};
     for (const s of newSuggestions) map[s.finding_id] = s;
     setSuggestionsByFinding(map);
+    const manualMap: Record<string, boolean> = {};
+    for (const c of changelog) {
+      if (c.suggestion_id === null) manualMap[c.finding_id] = true;
+    }
+    setManualEntriesByFinding(manualMap);
   };
 
   // Start audit
@@ -895,6 +908,7 @@ export default function AssignmentDetailPage() {
                       key={finding.id}
                       finding={finding}
                       suggestion={suggestionsByFinding[finding.id]}
+                      hasManualEntry={manualEntriesByFinding[finding.id] ?? false}
                       onReload={reloadFindingsAndSuggestions}
                     />
                   ))}
@@ -950,10 +964,12 @@ type ReasonMode = "deny" | "ignore" | "done" | "manual_entry" | null;
 function FindingReviewCard({
   finding,
   suggestion,
+  hasManualEntry,
   onReload,
 }: {
   finding: Finding;
   suggestion: Suggestion | undefined;
+  hasManualEntry: boolean;
   onReload: () => Promise<void>;
 }) {
   const [expanded, setExpanded] = useState(true);
@@ -1200,25 +1216,32 @@ function FindingReviewCard({
             </div>
           ) : (
             !handled && (
-              <div className="flex flex-wrap gap-2">
-                <button
-                  onClick={runGenerate}
-                  disabled={acting !== null}
-                  className="rounded-lg border border-primary/30 bg-primary/10 px-3 py-1.5 text-[12px] font-medium text-primary hover:bg-primary/20 transition-all disabled:opacity-50"
-                >
-                  {acting === "generate" ? "Generating fix…" : "Generate fix with AI"}
-                </button>
-                <button
-                  onClick={() => {
-                    setDialogMode("manual_entry");
-                    setReasonText("");
-                    setErrorMessage(null);
-                  }}
-                  disabled={acting !== null}
-                  className="rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-1.5 text-[12px] font-medium text-sky-300 hover:bg-sky-500/20 transition-all disabled:opacity-50"
-                >
-                  Add changelog entry
-                </button>
+              <div className="space-y-2">
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={runGenerate}
+                    disabled={acting !== null || hasManualEntry}
+                    className="rounded-lg border border-primary/30 bg-primary/10 px-3 py-1.5 text-[12px] font-medium text-primary hover:bg-primary/20 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {acting === "generate" ? "Generating fix…" : "Generate fix with AI"}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setDialogMode("manual_entry");
+                      setReasonText("");
+                      setErrorMessage(null);
+                    }}
+                    disabled={acting !== null || hasManualEntry}
+                    className="rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-1.5 text-[12px] font-medium text-sky-300 hover:bg-sky-500/20 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    Add changelog entry
+                  </button>
+                </div>
+                {hasManualEntry && (
+                  <p className="text-[11px] text-sky-400/70">
+                    Changelog entry recorded — no further action needed.
+                  </p>
+                )}
               </div>
             )
           )}
