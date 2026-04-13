@@ -122,11 +122,16 @@ async def generate_suggestion_for_finding(finding: Finding) -> Suggestion | None
     """Generate a text fix suggestion for a finding using Claude."""
     node = await get_node(finding.assignment_id)
     if node is None:
+        logger.warning("generate_suggestion: node not found for assignment_id=%s", finding.assignment_id)
         return None
 
     # Prefer description; fall back to file_content (e.g. page nodes with downloaded body).
     source_text = node.description or node.file_content
     if not source_text:
+        logger.warning(
+            "generate_suggestion: node %s (type=%s) has no description or file_content",
+            node.id, node.type,
+        )
         return None
 
     # For rubric-typed findings, pass rubric JSON as source-of-truth text.
@@ -163,7 +168,7 @@ async def generate_suggestion_for_finding(finding: Finding) -> Suggestion | None
 
     try:
         result = subprocess.run(
-            ["claude", "--print", "--no-markdown", prompt],
+            ["claude", "--print", prompt],
             capture_output=True, text=True, timeout=60,
         )
         raw = result.stdout.strip()
@@ -236,10 +241,10 @@ async def _run_canvas_tool(tool: str, tool_input_json: str) -> tuple[bool, str]:
     try:
         result = subprocess.run(
             [
-                "claude", "--print", "--no-markdown",
+                "claude", "--print",
                 "--allowedTools", f"mcp__canvas-api__{tool}",
-                prompt,
             ],
+            input=prompt,
             capture_output=True, text=True, timeout=120,
         )
         stdout = (result.stdout or "").strip()
