@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "audit": {
-      "command": "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13",
+      "command": "/Users/futur/Library/Mobile Documents/com~apple~CloudDocs/School/USF/TA Jobs/EGN 3000L/complete_course_audit/.venv/bin/python",
       "args": ["-m", "audit_mcp.audit_mcp"]
     }
   }

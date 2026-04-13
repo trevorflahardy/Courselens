@@ -41,9 +41,7 @@ check:
 # Run all CI steps locally in GH order (use this to reproduce CI failures)
 ci:
 	@echo "=== [1/7] Python deps ==="
-	. .venv/bin/activate && pip install fastapi "uvicorn[standard]" aiosqlite \
-		"pydantic>=2.10" pydantic-settings networkx pypdf python-docx beautifulsoup4 \
-		fastmcp python-multipart pytest pytest-asyncio ruff mypy httpx
+	. .venv/bin/activate && pip install -e ".[dev]"
 	@echo "=== [2/7] Frontend deps ==="
 	cd frontend && bun install --frozen-lockfile
 	@echo "=== [3/7] Lint ==="
