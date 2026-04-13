@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import difflib
+import hashlib
 import json
 import logging
 import subprocess
 import uuid
+from typing import Any
 from datetime import datetime
 
 from backend.db import get_db
@@ -30,6 +33,7 @@ _DEFAULT_HANDLER = "trevor"
 # CRUD
 # ---------------------------------------------------------------------------
 
+
 async def create_suggestion(data: SuggestionCreate) -> Suggestion:
     db = await get_db()
     sid = f"sug-{uuid.uuid4().hex[:8]}"
@@ -40,9 +44,16 @@ async def create_suggestion(data: SuggestionCreate) -> Suggestion:
             original_text, suggested_text, diff_patch, status, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)""",
         (
-            sid, data.finding_id, data.node_id, data.field,
-            data.target_type.value, data.target_ref,
-            data.original_text, data.suggested_text, data.diff_patch, now,
+            sid,
+            data.finding_id,
+            data.node_id,
+            data.field,
+            data.target_type.value,
+            data.target_ref,
+            data.original_text,
+            data.suggested_text,
+            data.diff_patch,
+            now,
         ),
     )
     await db.commit()
@@ -105,8 +116,12 @@ async def _set_terminal_status(
            WHERE id = ?""",
         (
             new_status.value,
-            denial_reason, ignore_reason, manual_note,
-            handled_by, now, now,
+            denial_reason,
+            ignore_reason,
+            manual_note,
+            handled_by,
+            now,
+            now,
             suggestion_id,
         ),
     )
@@ -118,11 +133,14 @@ async def _set_terminal_status(
 # AI generation
 # ---------------------------------------------------------------------------
 
+
 async def generate_suggestion_for_finding(finding: Finding) -> Suggestion | None:
     """Generate a text fix suggestion for a finding using Claude."""
     node = await get_node(finding.assignment_id)
     if node is None:
-        logger.warning("generate_suggestion: node not found for assignment_id=%s", finding.assignment_id)
+        logger.warning(
+            "generate_suggestion: node not found for assignment_id=%s", finding.assignment_id
+        )
         return None
 
     # Prefer description; fall back to file_content (e.g. page nodes with downloaded body).
@@ -130,7 +148,8 @@ async def generate_suggestion_for_finding(finding: Finding) -> Suggestion | None
     if not source_text:
         logger.warning(
             "generate_suggestion: node %s (type=%s) has no description or file_content",
-            node.id, node.type,
+            node.id,
+            node.type,
         )
         return None
 
@@ -145,8 +164,18 @@ async def generate_suggestion_for_finding(finding: Finding) -> Suggestion | None
                 + json.dumps(rubric["criteria"], indent=2)[:3000]
             )
             target_hint = "rubric_criterion"
-    elif node.description is None and node.file_content:
+    elif node.type.value == "page":
         target_hint = "page_body"
+
+    # Restrict the target_type choices Claude can return to those valid for this node type.
+    from backend.models.node import NodeType
+
+    if node.type == NodeType.PAGE:
+        allowed_targets = "page_body"
+    elif node.type == NodeType.ASSIGNMENT:
+        allowed_targets = "description|rubric_criterion|title"
+    else:
+        allowed_targets = "description|page_body|title"
 
     prompt = (
         f"You are a course content editor. An audit finding was recorded:\n\n"
@@ -159,17 +188,19 @@ async def generate_suggestion_for_finding(finding: Finding) -> Suggestion | None
         "Quote the original text verbatim (max 500 chars). "
         f"Default target is '{target_hint}'. "
         "Return valid JSON only — no explanation, no markdown fences:\n"
-        '{"target_type": "description|page_body|rubric_criterion|title", '
-        '"target_ref": "<optional JSON string, e.g. {\\"criterion_id\\": \\"_1234\\"} for rubric_criterion>", '
+        '{{"target_type": "{allowed_targets}", '
+        '"target_ref": "<optional JSON string, e.g. {{\\"criterion_id\\": \\"_1234\\"}} for rubric_criterion>", '
         '"field": "description|long_description", '
         '"original_text": "<verbatim excerpt>", '
-        '"suggested_text": "<corrected version>"}'
-    )
+        '"suggested_text": "<corrected version>"}}'
+    ).format(allowed_targets=allowed_targets)
 
     try:
         result = subprocess.run(
             ["claude", "--print", prompt],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True,
+            text=True,
+            timeout=60,
         )
         raw = result.stdout.strip()
         start = raw.find("{")
@@ -182,9 +213,7 @@ async def generate_suggestion_for_finding(finding: Finding) -> Suggestion | None
             return None
         parsed = json.loads(raw[start:end])
     except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "suggestion_service: generation failed for finding %s: %s", finding.id, exc
-        )
+        logger.warning("suggestion_service: generation failed for finding %s: %s", finding.id, exc)
         return None
 
     target_type_raw = str(parsed.get("target_type", "description"))
@@ -206,13 +235,15 @@ async def generate_suggestion_for_finding(finding: Finding) -> Suggestion | None
     if not original or not suggested or original == suggested:
         return None
 
-    diff_lines = list(difflib.unified_diff(
-        original.splitlines(keepends=True),
-        suggested.splitlines(keepends=True),
-        fromfile=f"original/{field}",
-        tofile=f"suggested/{field}",
-        lineterm="",
-    ))
+    diff_lines = list(
+        difflib.unified_diff(
+            original.splitlines(keepends=True),
+            suggested.splitlines(keepends=True),
+            fromfile=f"original/{field}",
+            tofile=f"suggested/{field}",
+            lineterm="",
+        )
+    )
     diff_patch = "\n".join(diff_lines) if diff_lines else f"-{original}\n+{suggested}"
 
     data = SuggestionCreate(
@@ -232,38 +263,50 @@ async def generate_suggestion_for_finding(finding: Finding) -> Suggestion | None
 # Apply to Canvas
 # ---------------------------------------------------------------------------
 
-async def _run_canvas_tool(tool: str, tool_input_json: str) -> tuple[bool, str]:
-    """Invoke a Canvas MCP tool via a Claude subprocess. Returns (ok, stdout)."""
-    prompt = (
-        f"Use the Canvas MCP tool `{tool}` with this input:\n{tool_input_json}\n\n"
-        "Apply the change and confirm success. Return a short status line."
+
+async def _persist_node_description(node_id: str, new_text: str) -> None:
+    """Update nodes.description and recompute content_hash after a successful Canvas push."""
+    db = await get_db()
+    cursor = await db.execute("SELECT rubric_id FROM nodes WHERE id = ?", (node_id,))
+    row = await cursor.fetchone()
+    rubric_id: str = (row["rubric_id"] if row else None) or ""
+    new_hash = hashlib.sha256(f"{new_text}{rubric_id}".encode()).hexdigest()[:16]
+    await db.execute(
+        "UPDATE nodes SET description = ?, content_hash = ? WHERE id = ?",
+        (new_text, new_hash, node_id),
     )
-    try:
-        result = subprocess.run(
-            [
-                "claude", "--print",
-                "--allowedTools", f"mcp__canvas-api__{tool}",
-            ],
-            input=prompt,
-            capture_output=True, text=True, timeout=120,
-        )
-        stdout = (result.stdout or "").strip()
-        ok = result.returncode == 0
-        if not ok:
-            logger.warning(
-                "canvas tool %s failed: rc=%s stderr=%s",
-                tool, result.returncode, (result.stderr or "").strip()[:400],
-            )
-        return ok, stdout
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("canvas tool %s raised: %s", tool, exc)
-        return False, str(exc)
+    await db.commit()
+
+
+async def _persist_rubric_criteria(node_id: str, criteria: list[dict[str, object]]) -> None:
+    """Update rubrics.criteria_json after a successful Canvas rubric push."""
+    db = await get_db()
+    criteria_json = json.dumps(criteria)
+    new_hash = hashlib.sha256(criteria_json.encode()).hexdigest()[:16]
+    await db.execute(
+        """UPDATE rubrics SET criteria_json = ?, content_hash = ?
+           WHERE assignment_id = ?""",
+        (criteria_json, new_hash, node_id),
+    )
+    await db.commit()
+
+
+async def _get_canvas_course() -> tuple[Any, Any]:
+    """Return an initialised (Canvas, Course) pair using env-configured credentials."""
+    from canvasapi import Canvas
+
+    from backend.config import settings
+
+    base = settings.canvas_api_url.replace("/api/v1", "").rstrip("/")
+    canvas = await asyncio.to_thread(Canvas, base, settings.canvas_api_token)
+    course = await asyncio.to_thread(canvas.get_course, int(settings.canvas_course_id))
+    return canvas, course
 
 
 async def apply_suggestion(suggestion: Suggestion) -> tuple[bool, str, str]:
-    """Push an approved suggestion to Canvas via the appropriate MCP tool.
+    """Push an approved suggestion to Canvas via the canvasapi library.
 
-    Returns (success, new_text_after_substitution, canvas_response).
+    Returns (success, new_text_after_substitution, response_summary).
     """
     node = await get_node(suggestion.node_id)
     if node is None:
@@ -273,31 +316,54 @@ async def apply_suggestion(suggestion: Suggestion) -> tuple[bool, str, str]:
     canvas_id = node.id.split("-", 1)[1] if "-" in node.id else node.id
     target = suggestion.target_type
 
+    try:
+        _, course = await _get_canvas_course()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("apply_suggestion: Canvas init failed: %s", exc)
+        return False, "", f"Canvas init failed: {exc}"
+
     # --- Description on an assignment ---
     if target == SuggestionTargetType.DESCRIPTION and node.description:
-        new_text = node.description.replace(
-            suggestion.original_text, suggestion.suggested_text, 1
-        )
-        tool_input = json.dumps({
-            "course_id": "$CANVAS_COURSE_ID",
-            "assignment_id": canvas_id,
-            "description": new_text,
-        })
-        ok, out = await _run_canvas_tool("update_assignment", tool_input)
-        return ok, new_text, out
+        new_text = node.description.replace(suggestion.original_text, suggestion.suggested_text, 1)
+        try:
+            assignment = await asyncio.to_thread(course.get_assignment, int(canvas_id))
+            await asyncio.to_thread(assignment.edit, assignment={"description": new_text})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("apply_suggestion: assignment description update failed: %s", exc)
+            return False, "", str(exc)
+        await _persist_node_description(suggestion.node_id, new_text)
+        return True, new_text, "assignment description updated"
 
     # --- Page body ---
     if target == SuggestionTargetType.PAGE_BODY and node.description:
-        new_text = node.description.replace(
-            suggestion.original_text, suggestion.suggested_text, 1
-        )
-        tool_input = json.dumps({
-            "course_id": "$CANVAS_COURSE_ID",
-            "page_url": canvas_id,
-            "body": new_text,
-        })
-        ok, out = await _run_canvas_tool("edit_page_content", tool_input)
-        return ok, new_text, out
+        from backend.models.node import NodeType
+
+        new_text = node.description.replace(suggestion.original_text, suggestion.suggested_text, 1)
+        if node.type != NodeType.PAGE:
+            # Mis-classified target: node is not a page (e.g. assignment with description).
+            # Fall through to description update so we don't attempt get_page on a numeric ID.
+            logger.warning(
+                "apply_suggestion: target_type=page_body on non-page node %s (%s), "
+                "treating as description update",
+                node.id,
+                node.type.value,
+            )
+            try:
+                assignment = await asyncio.to_thread(course.get_assignment, int(canvas_id))
+                await asyncio.to_thread(assignment.edit, assignment={"description": new_text})
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("apply_suggestion: assignment description fallback failed: %s", exc)
+                return False, "", str(exc)
+            await _persist_node_description(suggestion.node_id, new_text)
+            return True, new_text, "assignment description updated (page_body fallback)"
+        try:
+            page = await asyncio.to_thread(course.get_page, canvas_id)
+            await asyncio.to_thread(page.edit, wiki_page={"body": new_text})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("apply_suggestion: page body update failed: %s", exc)
+            return False, "", str(exc)
+        await _persist_node_description(suggestion.node_id, new_text)
+        return True, new_text, "page body updated"
 
     # --- Rubric criterion description / long_description ---
     if target == SuggestionTargetType.RUBRIC_CRITERION:
@@ -312,19 +378,17 @@ async def apply_suggestion(suggestion: Suggestion) -> tuple[bool, str, str]:
             except json.JSONDecodeError:
                 ref_criterion_id = None
 
-        criteria = list(rubric.get("criteria") or [])  # type: ignore[arg-type]
+        criteria: list[dict[str, object]] = list(rubric.get("criteria") or [])  # type: ignore[arg-type]
         patched = False
         for crit in criteria:
-            if not isinstance(crit, dict):
+            if not isinstance(crit, dict):  # type: ignore
                 continue
             if ref_criterion_id and str(crit.get("id")) != ref_criterion_id:
                 continue
             current = str(crit.get(suggestion.field, crit.get("description", "")))
             if suggestion.original_text not in current:
                 continue
-            new_text = current.replace(
-                suggestion.original_text, suggestion.suggested_text, 1
-            )
+            new_text = current.replace(suggestion.original_text, suggestion.suggested_text, 1)
             crit[suggestion.field] = new_text
             patched = True
             break
@@ -333,13 +397,21 @@ async def apply_suggestion(suggestion: Suggestion) -> tuple[bool, str, str]:
             return False, "", "rubric criterion did not match original_text"
 
         rubric_canvas_id = str(rubric.get("canvas_id") or rubric.get("id"))
-        tool_input = json.dumps({
-            "course_id": "$CANVAS_COURSE_ID",
-            "rubric_id": rubric_canvas_id,
-            "criteria": criteria,
-        })
-        ok, out = await _run_canvas_tool("update_rubric", tool_input)
-        return ok, suggestion.suggested_text, out
+        try:
+            from canvasapi.util import combine_kwargs
+
+            rubric_obj = await asyncio.to_thread(course.get_rubric, int(rubric_canvas_id))
+            # canvasapi has no Rubric.update wrapper — call the requester directly.
+            await asyncio.to_thread(
+                rubric_obj._requester.request,
+                "PUT",
+                f"courses/{course.id}/rubrics/{rubric_canvas_id}",
+                _kwargs=combine_kwargs(rubric={"criteria": criteria}),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("apply_suggestion: rubric update failed: %s", exc)
+            return False, "", str(exc)
+        return True, suggestion.suggested_text, "rubric criterion updated"
 
     # --- Module item ---
     if target == SuggestionTargetType.MODULE_ITEM:
@@ -349,27 +421,29 @@ async def apply_suggestion(suggestion: Suggestion) -> tuple[bool, str, str]:
                 ref = json.loads(suggestion.target_ref)
             except json.JSONDecodeError:
                 ref = {}
-        tool_input = json.dumps({
-            "course_id": "$CANVAS_COURSE_ID",
-            "module_id": ref.get("module_id"),
-            "module_item_id": ref.get("module_item_id"),
-            suggestion.field: suggestion.suggested_text,
-        })
-        ok, out = await _run_canvas_tool("update_module_item", tool_input)
-        return ok, suggestion.suggested_text, out
+        try:
+            module = await asyncio.to_thread(course.get_module, int(str(ref.get("module_id"))))
+            item = await asyncio.to_thread(
+                module.get_module_item, int(str(ref.get("module_item_id")))
+            )
+            await asyncio.to_thread(
+                item.edit, module_item={suggestion.field: suggestion.suggested_text}
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("apply_suggestion: module item update failed: %s", exc)
+            return False, "", str(exc)
+        return True, suggestion.suggested_text, "module item updated"
 
     # --- Title on an assignment ---
     if target == SuggestionTargetType.TITLE:
-        new_title = node.title.replace(
-            suggestion.original_text, suggestion.suggested_text, 1
-        )
-        tool_input = json.dumps({
-            "course_id": "$CANVAS_COURSE_ID",
-            "assignment_id": canvas_id,
-            "name": new_title,
-        })
-        ok, out = await _run_canvas_tool("update_assignment", tool_input)
-        return ok, new_title, out
+        new_title = node.title.replace(suggestion.original_text, suggestion.suggested_text, 1)
+        try:
+            assignment = await asyncio.to_thread(course.get_assignment, int(canvas_id))
+            await asyncio.to_thread(assignment.edit, assignment={"name": new_title})
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("apply_suggestion: assignment title update failed: %s", exc)
+            return False, "", str(exc)
+        return True, new_title, "assignment title updated"
 
     logger.warning("apply_suggestion: unsupported target_type %s", target)
     return False, "", f"unsupported target_type {target}"
@@ -379,8 +453,10 @@ async def apply_suggestion(suggestion: Suggestion) -> tuple[bool, str, str]:
 # Terminal actions — approve / deny / ignore / done manually
 # ---------------------------------------------------------------------------
 
+
 async def _load_finding(finding_id: str) -> Finding | None:
     from backend.services.finding_service import get_finding
+
     return await get_finding(finding_id)
 
 
@@ -405,8 +481,9 @@ async def _set_finding_status(finding_id: str, new_status: FindingStatus) -> Non
         )
     await db.commit()
     if row:
-        from backend.services.finding_service import _refresh_node_status
-        await _refresh_node_status(row[0])
+        from backend.services.finding_service import refresh_node_status
+
+        await refresh_node_status(row[0])
 
 
 async def _write_change_log(
@@ -419,24 +496,26 @@ async def _write_change_log(
     handled_by: str,
 ) -> None:
     finding = await _load_finding(suggestion.finding_id)
-    await changelog_service.create_applied_change(AppliedChangeCreate(
-        suggestion_id=suggestion.id,
-        finding_id=suggestion.finding_id,
-        node_id=suggestion.node_id,
-        action=action,
-        target_type=suggestion.target_type.value,
-        field=suggestion.field,
-        original_text=suggestion.original_text,
-        new_text=new_text,
-        diff_patch=suggestion.diff_patch,
-        finding_title=finding.title if finding else "(finding unavailable)",
-        finding_severity=finding.severity.value if finding else "info",
-        finding_pass=finding.pass_number if finding else None,
-        evidence_quote=finding.evidence if finding else None,
-        reason_or_note=reason_or_note,
-        canvas_response=canvas_response,
-        handled_by=handled_by,
-    ))
+    await changelog_service.create_applied_change(
+        AppliedChangeCreate(
+            suggestion_id=suggestion.id,
+            finding_id=suggestion.finding_id,
+            node_id=suggestion.node_id,
+            action=action,
+            target_type=suggestion.target_type.value,
+            field=suggestion.field,
+            original_text=suggestion.original_text,
+            new_text=new_text,
+            diff_patch=suggestion.diff_patch,
+            finding_title=finding.title if finding else "(finding unavailable)",
+            finding_severity=finding.severity.value if finding else "info",
+            finding_pass=finding.pass_number if finding else None,
+            evidence_quote=finding.evidence if finding else None,
+            reason_or_note=reason_or_note,
+            canvas_response=canvas_response,
+            handled_by=handled_by,
+        )
+    )
 
 
 async def approve_and_apply(
@@ -455,7 +534,9 @@ async def approve_and_apply(
         return sug, False, canvas_response
 
     updated = await _set_terminal_status(
-        suggestion_id, SuggestionStatus.APPROVED, handled_by=handled_by,
+        suggestion_id,
+        SuggestionStatus.APPROVED,
+        handled_by=handled_by,
     )
     if updated is not None:
         await _write_change_log(
@@ -480,8 +561,10 @@ async def deny_with_reason(
     if sug is None:
         return None
     updated = await _set_terminal_status(
-        suggestion_id, SuggestionStatus.DENIED,
-        denial_reason=reason, handled_by=handled_by,
+        suggestion_id,
+        SuggestionStatus.DENIED,
+        denial_reason=reason,
+        handled_by=handled_by,
     )
     if updated is not None:
         await _write_change_log(
@@ -507,8 +590,10 @@ async def ignore_with_reason(
     if sug is None:
         return None
     updated = await _set_terminal_status(
-        suggestion_id, SuggestionStatus.IGNORED,
-        ignore_reason=reason, handled_by=handled_by,
+        suggestion_id,
+        SuggestionStatus.IGNORED,
+        ignore_reason=reason,
+        handled_by=handled_by,
     )
     if updated is not None:
         await _write_change_log(
@@ -533,8 +618,10 @@ async def mark_done_manually(
     if sug is None:
         return None
     updated = await _set_terminal_status(
-        suggestion_id, SuggestionStatus.DONE_MANUALLY,
-        manual_note=note, handled_by=handled_by,
+        suggestion_id,
+        SuggestionStatus.DONE_MANUALLY,
+        manual_note=note,
+        handled_by=handled_by,
     )
     if updated is not None:
         await _write_change_log(

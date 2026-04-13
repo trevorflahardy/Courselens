@@ -12,7 +12,8 @@ from backend.services.node_service import get_node
 
 _SUGGESTION_QUALIFYING_TYPES = {FindingType.CLARITY, FindingType.FORMAT_MISMATCH}
 
-async def _refresh_node_status(assignment_id: str) -> None:
+
+async def refresh_node_status(assignment_id: str) -> None:
     """Set nodes.status to the worst active finding severity, or 'ok' if audited-clean."""
     db = await get_db()
     await db.execute(
@@ -48,10 +49,18 @@ async def create_finding(data: FindingCreate) -> Finding:
             status, content_hash_at_creation, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)""",
         (
-            finding_id, data.assignment_id, data.audit_run_id,
-            data.severity.value, data.finding_type.value,
-            data.title, data.body, data.linked_node, data.evidence,
-            data.pass_number, content_hash, now,
+            finding_id,
+            data.assignment_id,
+            data.audit_run_id,
+            data.severity.value,
+            data.finding_type.value,
+            data.title,
+            data.body,
+            data.linked_node,
+            data.evidence,
+            data.pass_number,
+            content_hash,
+            now,
         ),
     )
 
@@ -64,7 +73,7 @@ async def create_finding(data: FindingCreate) -> Finding:
         (data.assignment_id, data.assignment_id),
     )
     await db.commit()
-    await _refresh_node_status(data.assignment_id)
+    await refresh_node_status(data.assignment_id)
     finding = await get_finding(finding_id)
     if finding is None:
         raise RuntimeError(f"Failed to retrieve just-created finding {finding_id}")
@@ -72,6 +81,7 @@ async def create_finding(data: FindingCreate) -> Finding:
     # Fire-and-forget: generate AI suggestion for qualifying finding types
     if data.finding_type in _SUGGESTION_QUALIFYING_TYPES:
         from backend.services.suggestion_service import generate_suggestion_for_finding
+
         asyncio.create_task(generate_suggestion_for_finding(finding))
 
     return finding
@@ -148,8 +158,13 @@ async def resolve_stale_findings(assignment_id: str) -> dict[str, int]:
                SELECT finding_type FROM findings
                WHERE assignment_id = ? AND status = 'active'
            )""",
-        (FindingStatus.RESOLVED.value, now, assignment_id,
-         FindingStatus.STALE.value, assignment_id),
+        (
+            FindingStatus.RESOLVED.value,
+            now,
+            assignment_id,
+            FindingStatus.STALE.value,
+            assignment_id,
+        ),
     )
     resolved = cursor.rowcount
 
@@ -157,8 +172,7 @@ async def resolve_stale_findings(assignment_id: str) -> dict[str, int]:
     cursor = await db.execute(
         """UPDATE findings SET status = ?, resolved_at = ?
            WHERE assignment_id = ? AND status = ?""",
-        (FindingStatus.SUPERSEDED.value, now, assignment_id,
-         FindingStatus.STALE.value),
+        (FindingStatus.SUPERSEDED.value, now, assignment_id, FindingStatus.STALE.value),
     )
     superseded = cursor.rowcount
 
@@ -171,5 +185,5 @@ async def resolve_stale_findings(assignment_id: str) -> dict[str, int]:
         (assignment_id, assignment_id),
     )
     await db.commit()
-    await _refresh_node_status(assignment_id)
+    await refresh_node_status(assignment_id)
     return {"resolved": resolved, "superseded": superseded}
