@@ -174,6 +174,14 @@ export interface AppliedChange {
   created_at: string;
 }
 
+export interface AssignmentNote {
+  id: string;
+  node_id: string;
+  note: string;
+  created_by: string;
+  created_at: string;
+}
+
 export interface ChangelogStats {
   applied: number;
   denied: number;

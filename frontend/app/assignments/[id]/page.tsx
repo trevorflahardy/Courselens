@@ -4,6 +4,7 @@ import { useEffect, useState, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { api } from "@/lib/api";
 import type {
+  AssignmentNote,
   AuditRuntimeState,
   CourseNode,
   CourseNodeSummary,
@@ -45,6 +46,9 @@ import {
   CheckCircle2,
   XCircle,
   ChevronRight,
+  Plus,
+  Trash2,
+  StickyNote,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
@@ -187,6 +191,10 @@ export default function AssignmentDetailPage() {
   const [findings, setFindings] = useState<Finding[]>([]);
   const [suggestionsByFinding, setSuggestionsByFinding] = useState<Record<string, Suggestion>>({});
   const [manualEntriesByFinding, setManualEntriesByFinding] = useState<Record<string, boolean>>({});
+  const [assignmentNotes, setAssignmentNotes] = useState<AssignmentNote[]>([]);
+  const [noteInput, setNoteInput] = useState("");
+  const [noteSubmitting, setNoteSubmitting] = useState(false);
+  const [noteError, setNoteError] = useState<string | null>(null);
   const [rubric, setRubric] = useState<Rubric | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -227,8 +235,9 @@ export default function AssignmentDetailPage() {
       api.listFindings({ assignment_id: id }),
       api.listSuggestions({ node_id: id }),
       api.listChangelog({ node_id: id }),
+      api.listAssignmentNotes(id),
     ])
-      .then(([nodeData, findingsData, suggestionsData, changelogData]) => {
+      .then(([nodeData, findingsData, suggestionsData, changelogData, notesData]) => {
         if (cancelled) return;
         setNode(nodeData);
         setFindings(
@@ -244,6 +253,7 @@ export default function AssignmentDetailPage() {
           if (c.suggestion_id === null) manualMap[c.finding_id] = true;
         }
         setManualEntriesByFinding(manualMap);
+        setAssignmentNotes(notesData);
         setLinkWeek(nodeData.week !== null ? String(nodeData.week) : "");
         setLinkModule(nodeData.module ?? "");
 
@@ -412,6 +422,31 @@ export default function AssignmentDetailPage() {
       if (c.suggestion_id === null) manualMap[c.finding_id] = true;
     }
     setManualEntriesByFinding(manualMap);
+  };
+
+  const handleAddNote = async () => {
+    if (!id || noteInput.trim().length === 0) return;
+    setNoteSubmitting(true);
+    setNoteError(null);
+    try {
+      const note = await api.createAssignmentNote(id, noteInput.trim());
+      setAssignmentNotes((prev) => [...prev, note]);
+      setNoteInput("");
+    } catch (err) {
+      setNoteError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setNoteSubmitting(false);
+    }
+  };
+
+  const handleDeleteNote = async (noteId: string) => {
+    if (!id) return;
+    try {
+      await api.deleteAssignmentNote(id, noteId);
+      setAssignmentNotes((prev) => prev.filter((n) => n.id !== noteId));
+    } catch {
+      /* ignore — stale UI is acceptable here */
+    }
   };
 
   // Start audit
@@ -686,6 +721,59 @@ export default function AssignmentDetailPage() {
                   ? "Locked: Course Audit Running"
                   : "Run Audit"}
           </button>
+        </div>
+
+        {/* Assignment notes */}
+        <div className="border-t border-white/[0.06] pt-4 space-y-2">
+          <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground/70 uppercase tracking-wider">
+            <StickyNote className="size-3" />
+            Notes
+            {assignmentNotes.length > 0 && (
+              <span className="ml-1 text-muted-foreground/50">({assignmentNotes.length})</span>
+            )}
+          </div>
+
+          {assignmentNotes.length > 0 && (
+            <ul className="space-y-1.5">
+              {assignmentNotes.map((n) => (
+                <li key={n.id} className="flex items-start gap-2 group">
+                  <span className="text-[12px] text-foreground/80 leading-relaxed flex-1">{n.note}</span>
+                  <span className="text-[10px] text-muted-foreground/40 shrink-0 pt-0.5">
+                    {new Date(n.created_at).toLocaleDateString()}
+                  </span>
+                  <button
+                    onClick={() => void handleDeleteNote(n.id)}
+                    className="shrink-0 opacity-0 group-hover:opacity-100 text-muted-foreground/40 hover:text-red-400 transition-all"
+                    aria-label="Delete note"
+                  >
+                    <Trash2 className="size-3" />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <form
+            onSubmit={(e) => { e.preventDefault(); void handleAddNote(); }}
+            className="flex items-center gap-2"
+          >
+            <input
+              value={noteInput}
+              onChange={(e) => setNoteInput(e.target.value)}
+              placeholder="Add a note for this assignment…"
+              disabled={noteSubmitting}
+              className="flex-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-3 py-1.5 text-[12px] placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-primary/50 disabled:opacity-50"
+            />
+            <button
+              type="submit"
+              disabled={noteSubmitting || noteInput.trim().length === 0}
+              className="inline-flex items-center gap-1 rounded-md border border-primary/30 bg-primary/10 px-2.5 py-1.5 text-[12px] font-medium text-primary hover:bg-primary/20 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {noteSubmitting ? <Loader2 className="size-3 animate-spin" /> : <Plus className="size-3" />}
+              Add
+            </button>
+          </form>
+          {noteError && <p className="text-[11px] text-red-400">{noteError}</p>}
         </div>
       </div>
 

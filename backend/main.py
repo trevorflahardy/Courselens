@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from backend.config import settings
 from backend.db import close_db, get_db, init_db
 from backend.routers import (
+    assignment_notes,
     audit,
     changelog,
     findings,
@@ -90,6 +91,7 @@ app.add_middleware(
 )
 
 app.include_router(nodes.router)
+app.include_router(assignment_notes.router)
 app.include_router(findings.router)
 app.include_router(graph.router)
 app.include_router(audit.router)

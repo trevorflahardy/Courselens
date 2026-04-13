@@ -23,6 +23,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 // --- Nodes ---
 
 import type {
+  AssignmentNote,
   CourseNode,
   CourseNodeSummary,
   NodeLink,
@@ -51,6 +52,18 @@ export const api = {
   },
 
   getNode: (id: string) => request<CourseNode>(`/api/nodes/${id}`),
+
+  listAssignmentNotes: (nodeId: string) =>
+    request<AssignmentNote[]>(`/api/nodes/${nodeId}/notes`),
+
+  createAssignmentNote: (nodeId: string, note: string) =>
+    request<AssignmentNote>(`/api/nodes/${nodeId}/notes`, {
+      method: "POST",
+      body: JSON.stringify({ note }),
+    }),
+
+  deleteAssignmentNote: (nodeId: string, noteId: string) =>
+    request<{ deleted: boolean }>(`/api/nodes/${nodeId}/notes/${noteId}`, { method: "DELETE" }),
 
   getAssignmentRubric: (id: string) => request<Rubric>(`/api/nodes/${id}/rubric`),
 

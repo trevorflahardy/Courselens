@@ -198,6 +198,23 @@ async def init_db() -> None:
         """)
         await db.commit()
 
+    # Idempotent migration: create assignment_notes table for freeform notes per node.
+    cursor = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='assignment_notes'"
+    )
+    if await cursor.fetchone() is None:
+        await db.executescript("""
+            CREATE TABLE assignment_notes (
+                id          TEXT PRIMARY KEY,
+                node_id     TEXT NOT NULL REFERENCES nodes(id),
+                note        TEXT NOT NULL,
+                created_by  TEXT NOT NULL,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_assignment_notes_node ON assignment_notes(node_id);
+        """)
+        await db.commit()
+
     # Idempotent migration: fix findings FK broken by the audit_runs rename.
     # SQLite auto-rewrites FK references on RENAME, so findings ended up pointing
     # at audit_runs_old (which was then dropped). Rebuild findings with the correct FK.
