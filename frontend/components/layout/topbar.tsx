@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { usePathname } from "next/navigation";
 import { api } from "@/lib/api";
 import { useAuditStore } from "@/lib/store";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 const routeTitles: Record<string, string> = {
   "/": "Dashboard",
@@ -11,7 +12,7 @@ const routeTitles: Record<string, string> = {
   "/graph": "Dependency Graph",
   "/audit": "Audit",
   "/ingest": "Ingestion",
-  "/suggestions": "Suggestions",
+  "/changelog": "Changelog",
 };
 
 function getBreadcrumb(pathname: string): { title: string; parent?: string } {
@@ -93,6 +94,7 @@ export function TopBar() {
       {/* Quick actions */}
       <div className="flex items-center gap-2">
         {mounted ? <CourseSelector /> : null}
+        {mounted ? <ThemeToggle /> : null}
         {mounted ? (
           <button className="flex items-center gap-1.5 rounded-lg border border-[oklch(0.35_0.03_270_/_0.3)] bg-[oklch(0.18_0.015_270_/_0.4)] px-2.5 py-1 text-[12px] font-medium text-muted-foreground/70 hover:text-foreground hover:bg-[oklch(0.22_0.02_270_/_0.5)] hover:border-[oklch(0.45_0.06_270_/_0.3)] transition-all duration-200">
             <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">

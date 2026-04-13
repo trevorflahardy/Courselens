@@ -115,19 +115,71 @@ export interface Finding {
 
 // --- Suggestion Models ---
 
-export type SuggestionStatus = "pending" | "approved" | "denied" | "ignored";
+export type SuggestionStatus =
+  | "pending"
+  | "approved"
+  | "denied"
+  | "ignored"
+  | "done_manually";
+
+export type SuggestionTargetType =
+  | "description"
+  | "page_body"
+  | "rubric_criterion"
+  | "module_item"
+  | "title";
 
 export interface Suggestion {
   id: string;
   finding_id: string;
   node_id: string;
   field: string;
+  target_type: SuggestionTargetType;
+  target_ref: string | null;
   original_text: string;
   suggested_text: string;
   diff_patch: string;
   status: SuggestionStatus;
+  denial_reason: string | null;
+  ignore_reason: string | null;
+  manual_note: string | null;
+  handled_by: string | null;
+  handled_at: string | null;
   created_at: string;
   resolved_at: string | null;
+}
+
+// --- Changelog / Applied Changes ---
+
+export type AppliedChangeAction = "applied" | "denied" | "ignored" | "done_manually";
+
+export interface AppliedChange {
+  id: string;
+  suggestion_id: string;
+  finding_id: string;
+  node_id: string;
+  action: AppliedChangeAction;
+  target_type: string;
+  field: string;
+  original_text: string;
+  new_text: string;
+  diff_patch: string;
+  finding_title: string;
+  finding_severity: FindingSeverity;
+  finding_pass: number | null;
+  evidence_quote: string | null;
+  reason_or_note: string | null;
+  canvas_response: string | null;
+  handled_by: string;
+  created_at: string;
+}
+
+export interface ChangelogStats {
+  applied: number;
+  denied: number;
+  ignored: number;
+  done_manually: number;
+  total: number;
 }
 
 // --- Graph Models ---

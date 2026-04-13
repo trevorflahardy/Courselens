@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono, Inter } from "next/font/google";
 import { Sidebar } from "@/components/layout/sidebar";
 import { TopBar } from "@/components/layout/topbar";
+import { ThemeProvider } from "@/components/theme-provider";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -36,20 +37,27 @@ export default function RootLayout({
     <html
       lang="en"
       suppressHydrationWarning
-      className={`${geistSans.variable} ${geistMono.variable} ${inter.variable} dark h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} ${inter.variable} h-full antialiased`}
     >
       <body suppressHydrationWarning className="min-h-full flex">
-        {/* Animated ambient gradient background */}
-        <div className="ambient-bg" aria-hidden="true" />
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="dark"
+          enableSystem
+          disableTransitionOnChange={false}
+        >
+          {/* Animated ambient gradient background */}
+          <div className="ambient-bg" aria-hidden="true" />
 
-        {/* Content layer above background */}
-        <div className="relative z-10 flex min-h-full w-full">
-          <Sidebar />
-          <div className="flex flex-1 flex-col min-h-screen ml-60">
-            <TopBar />
-            <main className="flex-1 px-8 py-6">{children}</main>
+          {/* Content layer above background */}
+          <div className="relative z-10 flex min-h-full w-full">
+            <Sidebar />
+            <div className="flex flex-1 flex-col min-h-screen ml-60">
+              <TopBar />
+              <main className="flex-1 px-8 py-6">{children}</main>
+            </div>
           </div>
-        </div>
+        </ThemeProvider>
       </body>
     </html>
   );

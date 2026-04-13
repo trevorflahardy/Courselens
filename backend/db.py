@@ -58,17 +58,103 @@ async def init_db() -> None:
                 finding_id      TEXT NOT NULL REFERENCES findings(id),
                 node_id         TEXT NOT NULL REFERENCES nodes(id),
                 field           TEXT NOT NULL,
+                target_type     TEXT NOT NULL DEFAULT 'description'
+                                CHECK(target_type IN ('description','page_body','rubric_criterion','module_item','title')),
+                target_ref      TEXT,
                 original_text   TEXT NOT NULL,
                 suggested_text  TEXT NOT NULL,
                 diff_patch      TEXT NOT NULL,
                 status          TEXT NOT NULL DEFAULT 'pending'
-                                CHECK(status IN ('pending','approved','denied','ignored')),
+                                CHECK(status IN ('pending','approved','denied','ignored','done_manually')),
+                denial_reason   TEXT,
+                ignore_reason   TEXT,
+                manual_note     TEXT,
+                handled_by      TEXT,
+                handled_at      TEXT,
                 created_at      TEXT NOT NULL DEFAULT (datetime('now')),
                 resolved_at     TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_suggestions_finding ON suggestions(finding_id);
             CREATE INDEX IF NOT EXISTS idx_suggestions_node    ON suggestions(node_id);
             CREATE INDEX IF NOT EXISTS idx_suggestions_status  ON suggestions(status);
+        """)
+        await db.commit()
+
+    # Idempotent migration: upgrade suggestions table for review workflow.
+    # Rename-rebuild-copy-drop because SQLite can't ALTER a CHECK constraint.
+    cursor = await db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='suggestions'"
+    )
+    row = await cursor.fetchone()
+    if row and "target_type" not in str(row[0]):
+        await db.executescript("""
+            PRAGMA foreign_keys=OFF;
+            ALTER TABLE suggestions RENAME TO suggestions_old;
+            CREATE TABLE suggestions (
+                id              TEXT PRIMARY KEY,
+                finding_id      TEXT NOT NULL REFERENCES findings(id),
+                node_id         TEXT NOT NULL REFERENCES nodes(id),
+                field           TEXT NOT NULL,
+                target_type     TEXT NOT NULL DEFAULT 'description'
+                                CHECK(target_type IN ('description','page_body','rubric_criterion','module_item','title')),
+                target_ref      TEXT,
+                original_text   TEXT NOT NULL,
+                suggested_text  TEXT NOT NULL,
+                diff_patch      TEXT NOT NULL,
+                status          TEXT NOT NULL DEFAULT 'pending'
+                                CHECK(status IN ('pending','approved','denied','ignored','done_manually')),
+                denial_reason   TEXT,
+                ignore_reason   TEXT,
+                manual_note     TEXT,
+                handled_by      TEXT,
+                handled_at      TEXT,
+                created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+                resolved_at     TEXT
+            );
+            INSERT INTO suggestions
+                (id, finding_id, node_id, field, original_text, suggested_text,
+                 diff_patch, status, created_at, resolved_at)
+            SELECT id, finding_id, node_id, field, original_text, suggested_text,
+                   diff_patch, status, created_at, resolved_at
+            FROM suggestions_old;
+            DROP TABLE suggestions_old;
+            CREATE INDEX IF NOT EXISTS idx_suggestions_finding ON suggestions(finding_id);
+            CREATE INDEX IF NOT EXISTS idx_suggestions_node    ON suggestions(node_id);
+            CREATE INDEX IF NOT EXISTS idx_suggestions_status  ON suggestions(status);
+            PRAGMA foreign_keys=ON;
+        """)
+        await db.commit()
+
+    # Idempotent migration: create applied_changes (the durable changelog).
+    cursor = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='applied_changes'"
+    )
+    if await cursor.fetchone() is None:
+        await db.executescript("""
+            CREATE TABLE applied_changes (
+                id                TEXT PRIMARY KEY,
+                suggestion_id     TEXT NOT NULL REFERENCES suggestions(id),
+                finding_id        TEXT NOT NULL REFERENCES findings(id),
+                node_id           TEXT NOT NULL REFERENCES nodes(id),
+                action            TEXT NOT NULL
+                                  CHECK(action IN ('applied','denied','ignored','done_manually')),
+                target_type       TEXT NOT NULL,
+                field             TEXT NOT NULL,
+                original_text     TEXT NOT NULL,
+                new_text          TEXT NOT NULL,
+                diff_patch        TEXT NOT NULL,
+                finding_title     TEXT NOT NULL,
+                finding_severity  TEXT NOT NULL,
+                finding_pass      INTEGER,
+                evidence_quote    TEXT,
+                reason_or_note    TEXT,
+                canvas_response   TEXT,
+                handled_by        TEXT NOT NULL,
+                created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_applied_changes_node ON applied_changes(node_id);
+            CREATE INDEX IF NOT EXISTS idx_applied_changes_created ON applied_changes(created_at);
+            CREATE INDEX IF NOT EXISTS idx_applied_changes_action ON applied_changes(action);
         """)
         await db.commit()
 

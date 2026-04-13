@@ -34,6 +34,9 @@ import type {
   DashboardStats,
   Rubric,
   Suggestion,
+  AppliedChange,
+  AppliedChangeAction,
+  ChangelogStats,
 } from "./types";
 
 export const api = {
@@ -186,11 +189,52 @@ export const api = {
   approveSuggestion: (id: string) =>
     request<Suggestion>(`/api/suggestions/${id}/approve`, { method: "POST" }),
 
-  denySuggestion: (id: string) =>
-    request<Suggestion>(`/api/suggestions/${id}/deny`, { method: "POST" }),
+  denySuggestion: (id: string, reason: string) =>
+    request<Suggestion>(`/api/suggestions/${id}/deny`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    }),
 
-  ignoreSuggestion: (id: string) =>
-    request<Suggestion>(`/api/suggestions/${id}/ignore`, { method: "POST" }),
+  ignoreSuggestion: (id: string, reason: string) =>
+    request<Suggestion>(`/api/suggestions/${id}/ignore`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    }),
+
+  markSuggestionDoneManually: (id: string, note: string | null) =>
+    request<Suggestion>(`/api/suggestions/${id}/done-manually`, {
+      method: "POST",
+      body: JSON.stringify({ note }),
+    }),
+
+  generateSuggestionForFinding: (findingId: string) =>
+    request<Suggestion>(`/api/suggestions/generate/${findingId}`, { method: "POST" }),
+
+  // Changelog
+  listChangelog: (params?: {
+    node_id?: string;
+    action?: AppliedChangeAction;
+    since?: string;
+    until?: string;
+  }) => {
+    const qs = new URLSearchParams();
+    if (params?.node_id) qs.set("node_id", params.node_id);
+    if (params?.action) qs.set("action", params.action);
+    if (params?.since) qs.set("since", params.since);
+    if (params?.until) qs.set("until", params.until);
+    const query = qs.toString();
+    return request<AppliedChange[]>(`/api/changelog${query ? `?${query}` : ""}`);
+  },
+
+  getChangelogStats: () => request<ChangelogStats>("/api/changelog/stats"),
+
+  downloadChangelogMarkdown: async () => {
+    const res = await fetch(`${API_BASE}/api/changelog/export.md`);
+    if (!res.ok) {
+      throw new Error(`API ${res.status}: ${await res.text()}`);
+    }
+    return res.blob();
+  },
 
   cleanupTestData: () =>
     request<{

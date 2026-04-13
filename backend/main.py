@@ -18,7 +18,16 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from backend.config import settings
 from backend.db import close_db, get_db, init_db
-from backend.routers import audit, findings, graph, ingest, internal, nodes, suggestions
+from backend.routers import (
+    audit,
+    changelog,
+    findings,
+    graph,
+    ingest,
+    internal,
+    nodes,
+    suggestions,
+)
 
 
 @asynccontextmanager
@@ -86,6 +95,7 @@ app.include_router(graph.router)
 app.include_router(audit.router)
 app.include_router(ingest.router)
 app.include_router(suggestions.router)
+app.include_router(changelog.router)
 app.include_router(internal.router)
 
 

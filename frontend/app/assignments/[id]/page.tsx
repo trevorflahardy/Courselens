@@ -13,12 +13,22 @@ import type {
   NodeType,
   Rubric,
   RubricCriterion,
+  Suggestion,
 } from "@/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SearchableMultiSelect } from "@/components/ui/searchable-multi-select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { DiffView } from "@/components/diff-view";
 import {
   Link2,
   ArrowLeft,
@@ -175,6 +185,7 @@ export default function AssignmentDetailPage() {
 
   const [node, setNode] = useState<CourseNode | null>(null);
   const [findings, setFindings] = useState<Finding[]>([]);
+  const [suggestionsByFinding, setSuggestionsByFinding] = useState<Record<string, Suggestion>>({});
   const [rubric, setRubric] = useState<Rubric | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -210,11 +221,22 @@ export default function AssignmentDetailPage() {
     setLoading(true);
     setError(null);
 
-    Promise.all([api.getNode(id), api.listFindings({ assignment_id: id })])
-      .then(([nodeData, findingsData]) => {
+    Promise.all([
+      api.getNode(id),
+      api.listFindings({ assignment_id: id }),
+      api.listSuggestions({ node_id: id }),
+    ])
+      .then(([nodeData, findingsData, suggestionsData]) => {
         if (cancelled) return;
         setNode(nodeData);
-        setFindings(findingsData.filter((f) => f.status === "active"));
+        setFindings(
+          findingsData.filter(
+            (f) => f.status === "active" || f.status === "resolved" || f.status === "confirmed",
+          ),
+        );
+        const map: Record<string, Suggestion> = {};
+        for (const s of suggestionsData) map[s.finding_id] = s;
+        setSuggestionsByFinding(map);
         setLinkWeek(nodeData.week !== null ? String(nodeData.week) : "");
         setLinkModule(nodeData.module ?? "");
 
@@ -354,6 +376,31 @@ export default function AssignmentDetailPage() {
     return Array.from(map.entries()).sort((a, b) => a[0] - b[0]);
   }, [findings]);
 
+  const handledCount = useMemo(() => {
+    return findings.filter((f) => {
+      if (f.status === "resolved" || f.status === "confirmed") return true;
+      const sug = suggestionsByFinding[f.id];
+      return sug !== undefined && sug.status !== "pending";
+    }).length;
+  }, [findings, suggestionsByFinding]);
+  const unhandledCount = findings.length - handledCount;
+
+  const reloadFindingsAndSuggestions = async () => {
+    if (!id) return;
+    const [newFindings, newSuggestions] = await Promise.all([
+      api.listFindings({ assignment_id: id }),
+      api.listSuggestions({ node_id: id }),
+    ]);
+    setFindings(
+      newFindings.filter(
+        (f) => f.status === "active" || f.status === "resolved" || f.status === "confirmed",
+      ),
+    );
+    const map: Record<string, Suggestion> = {};
+    for (const s of newSuggestions) map[s.finding_id] = s;
+    setSuggestionsByFinding(map);
+  };
+
   // Start audit
   const handleStartAudit = async () => {
     if (!id) return;
@@ -364,11 +411,21 @@ export default function AssignmentDetailPage() {
     try {
       await api.startAudit(id);
       await fetchAuditState();
-      // Refetch findings after a short delay to allow processing
+      // Refetch findings + suggestions after a short delay to allow processing
       setTimeout(async () => {
         try {
-          const newFindings = await api.listFindings({ assignment_id: id });
-          setFindings(newFindings.filter((f) => f.status === "active"));
+          const [newFindings, newSuggestions] = await Promise.all([
+            api.listFindings({ assignment_id: id }),
+            api.listSuggestions({ node_id: id }),
+          ]);
+          setFindings(
+            newFindings.filter(
+              (f) => f.status === "active" || f.status === "resolved" || f.status === "confirmed",
+            ),
+          );
+          const map: Record<string, Suggestion> = {};
+          for (const s of newSuggestions) map[s.finding_id] = s;
+          setSuggestionsByFinding(map);
           await fetchAuditState();
         } catch {
           /* ignore */
@@ -746,7 +803,7 @@ export default function AssignmentDetailPage() {
             Findings
             {findings.length > 0 && (
               <span className="ml-1.5 tabular-nums text-xs text-muted-foreground">
-                ({findings.length})
+                ({unhandledCount} unhandled · {handledCount} handled)
               </span>
             )}
           </TabsTrigger>
@@ -834,7 +891,12 @@ export default function AssignmentDetailPage() {
                 {/* Finding cards */}
                 <div className="space-y-3">
                   {passFindings.map((finding) => (
-                    <FindingCard key={finding.id} finding={finding} />
+                    <FindingReviewCard
+                      key={finding.id}
+                      finding={finding}
+                      suggestion={suggestionsByFinding[finding.id]}
+                      onReload={reloadFindingsAndSuggestions}
+                    />
                   ))}
                 </div>
               </div>
@@ -883,17 +945,120 @@ export default function AssignmentDetailPage() {
 // Sub-components
 // ---------------------------------------------------------------------------
 
-function FindingCard({ finding }: { finding: Finding }) {
+type ReasonMode = "deny" | "ignore" | "done" | null;
+
+function FindingReviewCard({
+  finding,
+  suggestion,
+  onReload,
+}: {
+  finding: Finding;
+  suggestion: Suggestion | undefined;
+  onReload: () => Promise<void>;
+}) {
+  const [expanded, setExpanded] = useState(true);
+  const [acting, setActing] = useState<"approve" | "deny" | "ignore" | "done" | "generate" | null>(null);
+  const [dialogMode, setDialogMode] = useState<ReasonMode>(null);
+  const [reasonText, setReasonText] = useState("");
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const handled =
+    finding.status === "resolved" ||
+    finding.status === "confirmed" ||
+    (suggestion !== undefined && suggestion.status !== "pending");
+
+  const statusLabel = (() => {
+    if (suggestion) {
+      if (suggestion.status === "approved") return "Applied to Canvas";
+      if (suggestion.status === "denied") return "Denied";
+      if (suggestion.status === "ignored") return "Ignored";
+      if (suggestion.status === "done_manually") return "Done Manually";
+    }
+    if (finding.status === "resolved") return "Resolved";
+    if (finding.status === "confirmed") return "Confirmed";
+    return null;
+  })();
+
+  const statusBadgeClass = (() => {
+    if (!statusLabel) return "";
+    if (statusLabel === "Applied to Canvas" || statusLabel === "Resolved" || statusLabel === "Done Manually")
+      return "bg-emerald-500/15 text-emerald-300 border-emerald-500/30";
+    if (statusLabel === "Denied" || statusLabel === "Confirmed")
+      return "bg-red-500/15 text-red-300 border-red-500/30";
+    return "bg-zinc-500/15 text-zinc-300 border-zinc-500/30";
+  })();
+
+  const runApprove = async () => {
+    if (!suggestion) return;
+    setActing("approve");
+    setErrorMessage(null);
+    try {
+      await api.approveSuggestion(suggestion.id);
+      await onReload();
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActing(null);
+    }
+  };
+
+  const runGenerate = async () => {
+    setActing("generate");
+    setErrorMessage(null);
+    try {
+      await api.generateSuggestionForFinding(finding.id);
+      await onReload();
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActing(null);
+    }
+  };
+
+  const submitReason = async () => {
+    if (!suggestion || dialogMode === null) return;
+    const trimmed = reasonText.trim();
+    if ((dialogMode === "deny" || dialogMode === "ignore") && trimmed.length === 0) {
+      setErrorMessage("A reason is required.");
+      return;
+    }
+    setActing(dialogMode === "done" ? "done" : dialogMode);
+    setErrorMessage(null);
+    try {
+      if (dialogMode === "deny") {
+        await api.denySuggestion(suggestion.id, trimmed);
+      } else if (dialogMode === "ignore") {
+        await api.ignoreSuggestion(suggestion.id, trimmed);
+      } else {
+        await api.markSuggestionDoneManually(suggestion.id, trimmed.length > 0 ? trimmed : null);
+      }
+      setDialogMode(null);
+      setReasonText("");
+      await onReload();
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActing(null);
+    }
+  };
+
   return (
-    <div className="bg-white/[0.03] border border-white/[0.08] rounded-lg p-4 space-y-2">
-      {/* Header row */}
-      <div className="flex items-start gap-2.5">
+    <div
+      className={`rounded-lg border p-4 space-y-3 transition-colors ${
+        handled ? "bg-card/40 border-border/60" : "bg-white/[0.03] border-white/[0.08]"
+      }`}
+    >
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex w-full items-start gap-2.5 text-left"
+      >
         <div className="mt-0.5">{severityIcon(finding.severity)}</div>
         <div className="flex-1 min-w-0 space-y-1">
           <div className="flex items-center gap-2 flex-wrap">
             <span
               className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider ${severityClass(
-                finding.severity
+                finding.severity,
               )}`}
             >
               {finding.severity}
@@ -901,32 +1066,200 @@ function FindingCard({ finding }: { finding: Finding }) {
             <span className="text-[10px] text-muted-foreground/60 uppercase tracking-wider">
               {finding.finding_type.replace(/_/g, " ")}
             </span>
+            {statusLabel && (
+              <span
+                className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium ${statusBadgeClass}`}
+              >
+                {statusLabel}
+              </span>
+            )}
           </div>
-          <p className="text-sm font-medium text-foreground/90">{finding.title}</p>
-        </div>
-      </div>
-
-      {/* Body */}
-      <p className="text-sm text-foreground/70 leading-relaxed pl-7">{finding.body}</p>
-
-      {/* Evidence quote */}
-      {finding.evidence && (
-        <div className="ml-7 border-l-2 border-primary/40 pl-3 py-1 text-sm text-muted-foreground/80 italic bg-white/[0.02] rounded-r">
-          {finding.evidence}
-        </div>
-      )}
-
-      {/* Linked node */}
-      {finding.linked_node && (
-        <div className="pl-7">
-          <a
-            href={`/assignments/${finding.linked_node}`}
-            className="text-xs text-primary/80 hover:text-primary transition-colors"
+          <p
+            className={`text-sm font-medium ${
+              handled ? "text-muted-foreground/80 line-through decoration-muted-foreground/40" : "text-foreground/90"
+            }`}
           >
-            View linked node →
-          </a>
+            {finding.title}
+          </p>
+        </div>
+        <ChevronRight
+          className={`size-4 text-muted-foreground/50 transition-transform ${expanded ? "rotate-90" : ""}`}
+        />
+      </button>
+
+      {expanded && (
+        <div className="pl-7 space-y-3">
+          <p className="text-sm text-foreground/70 leading-relaxed">{finding.body}</p>
+
+          {finding.evidence && (
+            <div className="border-l-2 border-primary/40 pl-3 py-1 text-sm text-muted-foreground/80 italic bg-white/[0.02] rounded-r">
+              {finding.evidence}
+            </div>
+          )}
+
+          {finding.linked_node && (
+            <div>
+              <a
+                href={`/assignments/${finding.linked_node}`}
+                className="text-xs text-primary/80 hover:text-primary transition-colors"
+              >
+                View linked node →
+              </a>
+            </div>
+          )}
+
+          {/* Suggestion section */}
+          {suggestion ? (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 text-[11px] text-muted-foreground/70">
+                <span>Suggested fix</span>
+                <span>·</span>
+                <span>target: <span className="font-mono text-foreground/70">{suggestion.target_type}</span></span>
+                <span>·</span>
+                <span>field: <span className="font-mono text-foreground/70">{suggestion.field}</span></span>
+              </div>
+              <DiffView patch={suggestion.diff_patch} />
+              {suggestion.denial_reason && (
+                <p className="text-[12px] text-red-400/80">
+                  <span className="font-semibold">Reason for denial:</span> {suggestion.denial_reason}
+                </p>
+              )}
+              {suggestion.ignore_reason && (
+                <p className="text-[12px] text-zinc-400/80">
+                  <span className="font-semibold">Reason to ignore:</span> {suggestion.ignore_reason}
+                </p>
+              )}
+              {suggestion.manual_note && (
+                <p className="text-[12px] text-emerald-400/80">
+                  <span className="font-semibold">Manual note:</span> {suggestion.manual_note}
+                </p>
+              )}
+
+              {suggestion.status === "pending" && (
+                <div className="flex flex-wrap gap-2 pt-1">
+                  <button
+                    onClick={runApprove}
+                    disabled={acting !== null}
+                    className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-[12px] font-medium text-emerald-300 hover:bg-emerald-500/20 transition-all disabled:opacity-50"
+                  >
+                    {acting === "approve" ? "Applying…" : "Approve & Apply"}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setDialogMode("deny");
+                      setReasonText("");
+                      setErrorMessage(null);
+                    }}
+                    disabled={acting !== null}
+                    className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-1.5 text-[12px] font-medium text-red-300 hover:bg-red-500/20 transition-all disabled:opacity-50"
+                  >
+                    Deny
+                  </button>
+                  <button
+                    onClick={() => {
+                      setDialogMode("ignore");
+                      setReasonText("");
+                      setErrorMessage(null);
+                    }}
+                    disabled={acting !== null}
+                    className="rounded-lg border border-zinc-500/30 bg-zinc-500/10 px-3 py-1.5 text-[12px] font-medium text-zinc-300 hover:bg-zinc-500/20 transition-all disabled:opacity-50"
+                  >
+                    Ignore
+                  </button>
+                  <button
+                    onClick={() => {
+                      setDialogMode("done");
+                      setReasonText("");
+                      setErrorMessage(null);
+                    }}
+                    disabled={acting !== null}
+                    className="rounded-lg border border-sky-500/30 bg-sky-500/10 px-3 py-1.5 text-[12px] font-medium text-sky-300 hover:bg-sky-500/20 transition-all disabled:opacity-50"
+                  >
+                    Done Manually
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : (
+            !handled && (
+              <div>
+                <button
+                  onClick={runGenerate}
+                  disabled={acting !== null}
+                  className="rounded-lg border border-primary/30 bg-primary/10 px-3 py-1.5 text-[12px] font-medium text-primary hover:bg-primary/20 transition-all disabled:opacity-50"
+                >
+                  {acting === "generate" ? "Generating fix…" : "Generate fix with AI"}
+                </button>
+              </div>
+            )
+          )}
+
+          {errorMessage && (
+            <p className="text-[12px] text-red-400">{errorMessage}</p>
+          )}
         </div>
       )}
+
+      {/* Reason / note dialog */}
+      <Dialog
+        open={dialogMode !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDialogMode(null);
+            setReasonText("");
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {dialogMode === "deny" && "Deny this suggestion"}
+              {dialogMode === "ignore" && "Ignore this suggestion"}
+              {dialogMode === "done" && "Mark as done manually"}
+            </DialogTitle>
+            <DialogDescription>
+              {dialogMode === "deny" &&
+                "Explain why this suggestion is wrong. The reason is recorded in the changelog."}
+              {dialogMode === "ignore" &&
+                "Explain why you're deferring this. The finding stays active so it can resurface on the next audit."}
+              {dialogMode === "done" &&
+                "Optional note describing what you did. The change is logged in the changelog regardless."}
+            </DialogDescription>
+          </DialogHeader>
+          <textarea
+            value={reasonText}
+            onChange={(e) => setReasonText(e.target.value)}
+            placeholder={
+              dialogMode === "done"
+                ? "Optional note…"
+                : "Reason (required)…"
+            }
+            rows={4}
+            className="w-full rounded-lg border border-border bg-input/60 p-2 text-sm resize-y focus:outline-none focus:ring-1 focus:ring-primary"
+          />
+          {errorMessage && (
+            <p className="text-[12px] text-red-400 -mt-2">{errorMessage}</p>
+          )}
+          <DialogFooter>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setDialogMode(null);
+                setReasonText("");
+              }}
+              disabled={acting !== null}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={submitReason}
+              disabled={acting !== null}
+            >
+              {acting !== null ? "Saving…" : "Confirm"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
